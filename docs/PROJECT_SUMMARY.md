@@ -19,6 +19,7 @@
   - **stability（ペア方向ベクトルの分散）は全実験設定を通じて一貫してFisher優位**（15〜100倍超）。最も頑健な差別化ポイント。
   - **feature overlap（LIMEtreeの主張の直接的な操作化）はFisherが優位になる条件と、逆転する条件が両方ある**。真のLasso選択＋相関の強い特徴量がある設定では概ねFisher優位だが、クラス数が多いとFisherのハードラベル設計がクラスを局所近傍から丸ごと欠落させる問題があり、これが逆転の主因（冗長特徴量の予算不足ではない）。
   - ソフトラベル版Fisher（`fit_fisher_soft`）はこの欠落は解消するが、feature overlap自体は多くの条件でむしろ悪化する（クラス間の分離が弱まるため）。単純な優劣ではなくトレードオフとして扱うべき。
+  - **fidelity（忠実性）は測り方で結論が変わる**。Fisherを標準の多クラス確率分類器として評価すると one-vs-rest に大きく劣る（Hellinger損失で2〜6倍、argmax一致率でも76.5%対55%前後）。しかし提案アルゴリズムが実際に使う量（黒箱が決めた予測クラス$c^*$と競合クラス$c'$のペア比較の符号）で測り直すと、one-vs-rest 81.3% vs Fisher 80.4%とほぼ互角。**Fisherの忠実性の弱さは「絶対確率値としての解釈」に限定され、「2クラス比較の方向」としての忠実性はone-vs-restと同等**、という切り分けが重要。
 
 ## 主要な構成
 
@@ -36,6 +37,8 @@
   - `transitivity_violation_rate`: **理論的に常に0になるため実験では未使用**。docstringに理由を明記した上でコードのみ残置。
 - `src/run_experiment.py`: 次元数×クラス数×Kのグリッドで両手法を比較する実験ドライバ。完走済み、結果は`results/experiment_results.csv`等に出力。
 - `src/investigate_reversal.py`: feature overlapでFisherの優位性が逆転する条件（高クラス数）の原因を切り分ける診断スクリプト。ハード版・ソフト版Fisherを同時比較する。
+- `src/fidelity.py`: 忠実性（fidelity）評価用の確率変換・損失関数。`onevsrest_predict_proba`（Ridge出力のクリップ＋正規化）、`fisher_predict_proba`（LDA確率モデルによる擬似確率、`LinearDiscriminantAnalysis.predict_proba`と同じ考え方）、`weighted_hellinger_loss`（SLISEMAP Eq.11と同じ二乗Hellinger距離）。
+- `src/run_fidelity_experiment.py`: 次元数×クラス数グリッドでone-vs-rest / Fisher(hard) / Fisher(soft)の忠実性を比較する実験ドライバ。結果は`results/fidelity_results.csv`。
 - `.venv/`: Python仮想環境（`.gitignore`で除外、コミット対象外）。
 
 ## セットアップと実行方法
@@ -76,5 +79,6 @@ python3 src/investigate_reversal.py   # 高クラス数での逆転を調べる�
 
 - consistencyの主張を、実測で裏付けられる正確な形（LIMEtreeの「共通構造の有無」の定義に基づく、条件付きの主張）に修論の記述を修正する。
 - ハード版・ソフト版Fisherのトレードオフを理論的に説明する（重心間距離・S_Bの直接比較など）。ハイブリッド案（局所サンプルが少ないクラスだけソフトにフォールバック）の検討。
-- 忠実性（fidelity）の評価（TODO、未着手）。
+- 「黒箱が選んだペアでの符号一致率」（fidelityの最終的に妥当な定義）を`src/`に正式な指標として組み込む（現状アドホック実行のみ）。
+- stability・feature overlap・sum-to-one・fidelityの4指標を統合し、修論の主張として文章化する。
 - 実データセットでの再現性確認。
