@@ -1,16 +1,18 @@
 """Consistency and stability metrics for one-vs-rest LIME vs Fisher LIME.
 
-Consistency (Q1-2 in the discussion):
-  - sum-to-one deviation: |P(A)+P(B)+P(C)+... - 1| for one-vs-rest's three
-    independently-fit local probability surrogates.
-  - transitivity violation rate: how often a cyclic/contradictory ranking
-    (diff(X,Y)>0 and diff(Y,Z)>0 but diff(X,Z)<=0) appears across all
-    ordered triples of classes.
-    * one-vs-rest score: diff(X,Y) = local_pred_X - local_pred_Y
-    * Fisher score: diff(X,Y) = v(X,Y) . x   (the *uncentered* score --
-      this is exactly the quantity the additivity proof covers: a centered/
-      thresholded classification rule would break the exact algebraic
-      guarantee, see write-up)
+Structural consistency, per LIMEtree's actual definition (Sokol & Flach
+2025, Sec. 3, p.5): per-class explanations are "diverse, inconsistent,
+competing or contradictory... whenever these models do not share a common
+tree structure or split on different feature subsets". For our linear
+surrogates this becomes: do the per-class top-K explanation vectors use
+overlapping feature subsets? See mean_pairwise_feature_overlap and
+sum_to_one_deviation_topk below.
+
+transitivity_violation_rate is kept only as a documented dead end: it is
+provably always 0 for ANY method that assigns one real-valued score per
+class (a>b, b>c => a>c holds for any three real numbers regardless of how
+they were computed), so it cannot discriminate between methods and is no
+longer used by run_experiment.py.
 
 Stability (Q1-3 in the discussion):
   - repeat the perturbation-and-fit procedure K times for the same instance,
@@ -22,7 +24,7 @@ Stability (Q1-3 in the discussion):
 """
 from __future__ import annotations
 
-from itertools import permutations
+from itertools import combinations, permutations
 
 import numpy as np
 
@@ -55,3 +57,38 @@ def total_variance(vectors: list[np.ndarray]) -> float:
         return float("nan")
     M = np.vstack(vectors)
     return float(np.var(M, axis=0, ddof=1).sum())
+
+
+def jaccard(a: frozenset, b: frozenset) -> float:
+    if not a and not b:
+        return 1.0
+    return len(a & b) / len(a | b)
+
+
+def mean_pairwise_feature_overlap(topk_sets: dict) -> float:
+    """LIMEtree's actual consistency claim, operationalized: do the per-class
+    explanations rely on the same feature subset? Average Jaccard overlap of
+    the top-K feature indices across every pair of classes' explanation
+    vectors. High = shared structure (LIMEtree's desideratum); low = the
+    'diverse, inconsistent... split on different feature subsets' failure
+    mode LIMEtree names (Sec. 3, p.5)."""
+    keys = list(topk_sets.keys())
+    if len(keys) < 2:
+        return float("nan")
+    sims = []
+    for c1, c2 in combinations(keys, 2):
+        sims.append(jaccard(topk_sets[c1], topk_sets[c2]))
+    return float(np.mean(sims))
+
+
+def sum_to_one_deviation_topk(intercepts: dict, coefs: dict, topk_sets: dict, x: np.ndarray) -> float:
+    """Same sum-to-one check as sum_to_one_deviation, but using only the
+    displayed top-K features of each class's explanation (as a real sparse
+    LIME explanation would report), to show how sparsification itself
+    degrades the sum-to-one property."""
+    total = 0.0
+    for c in intercepts:
+        idx = np.array(sorted(topk_sets[c]), dtype=int)
+        pred = intercepts[c] + float(coefs[c][idx] @ x[idx])
+        total += pred
+    return abs(total - 1.0)

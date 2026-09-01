@@ -1,8 +1,27 @@
-"""Main experiment: one-vs-rest LIME vs Fisher LIME, compared on
-(1) consistency -- sum-to-one deviation & transitivity violation rate, and
-(2) stability -- variance of the competing-pair direction vector under
-    repeated perturbation resampling,
-across a grid of (n_features, n_classes).
+"""Main experiment: one-vs-rest LIME vs Fisher LIME, compared on the
+literature-grounded definitions of the multi-class problem:
+
+  (1) structural consistency -- LIMEtree (Sokol & Flach 2025, Sec. 3, p.5)
+      names the actual failure mode as per-class surrogates that "do not
+      share a common tree structure or split on different feature subsets".
+      We operationalize this for linear surrogates as: take each class's
+      top-K explanation features (as a real sparse LIME explanation would
+      display, LIME's own 'highest_weights' selection mode), then measure
+      the average pairwise Jaccard overlap of these top-K feature sets
+      across all classes. High overlap = shared structure; low overlap =
+      LIMEtree's named failure mode.
+  (2) sum-to-one deviation under that SAME top-K truncation -- shows how
+      the structural divergence in (1) is what actually degrades
+      sum-to-one (not independent fitting per se, see README/results notes).
+  (3) stability -- variance of the competing-pair direction vector under
+      repeated perturbation resampling (Q1-3 from the original discussion).
+
+We removed the "transitivity violation rate" metric used in an earlier
+version of this script: it is provably always 0 for ANY method that
+assigns one real-valued score per class (a >b, b>c => a>c holds for any
+three real numbers, regardless of how they were computed), so it cannot
+discriminate between methods. See the conversation record / commit history
+for the derivation.
 
 Usage: python3 src/run_experiment.py
 Output: results/experiment_results.csv (+ printed summary)
@@ -21,11 +40,20 @@ from sklearn.model_selection import train_test_split
 
 sys.path.insert(0, str(Path(__file__).parent))
 from perturbation import sample_perturbations  # noqa: E402
-from surrogates import fit_onevsrest, fit_fisher  # noqa: E402
-from metrics import sum_to_one_deviation, transitivity_violation_rate, total_variance  # noqa: E402
+from surrogates import fit_onevsrest, fit_onevsrest_lasso, fit_fisher, top_k_indices  # noqa: E402
+from metrics import (  # noqa: E402
+    sum_to_one_deviation,
+    sum_to_one_deviation_topk,
+    mean_pairwise_feature_overlap,
+    total_variance,
+)
 
-N_FEATURES_GRID = [5, 10, 20]
+# n_features grid chosen to always leave room for redundant (correlated)
+# features on top of the informative core: n_informative = max(3, n_classes),
+# n_redundant = n_features - n_informative.
+N_FEATURES_GRID = [8, 14, 20]
 N_CLASSES_GRID = [3, 4, 5]
+K_FRACS = [0.3, 0.6]  # top-K as a fraction of n_features ("sparse" / "less sparse")
 N_INSTANCES = 8
 N_STABILITY_REPEATS = 15
 N_PERTURB_SAMPLES = 300
@@ -42,12 +70,18 @@ def pick_contested_instances(clf, X_pool, n_instances):
 
 
 def run_one_cell(n_features: int, n_classes: int, rng: np.random.Generator) -> list[dict]:
-    n_informative = min(n_features, max(n_classes, 3))
+    # n_informative "core" features determine the classes; n_redundant are
+    # random linear combinations of the core features, i.e. deliberately
+    # correlated with them -- the multicollinearity that makes independent
+    # per-class Lasso feature selection unstable/arbitrary (a well-known
+    # Lasso property), which is what we want to stress-test here.
+    n_informative = max(3, n_classes)
+    n_redundant = max(0, n_features - n_informative)
     X, y = make_classification(
         n_samples=2000,
         n_features=n_features,
         n_informative=n_informative,
-        n_redundant=0,
+        n_redundant=n_redundant,
         n_repeated=0,
         n_classes=n_classes,
         n_clusters_per_class=1,
@@ -61,12 +95,13 @@ def run_one_cell(n_features: int, n_classes: int, rng: np.random.Generator) -> l
     feature_std = X_train.std(axis=0)
     feature_std[feature_std == 0] = 1.0
     classes = np.arange(n_classes)
+    k_values = sorted({max(1, round(frac * n_features)) for frac in K_FRACS})
 
     instances = pick_contested_instances(clf, X_test, N_INSTANCES)
 
     rows = []
     for x in instances:
-        # --- one shared-sampling run for the consistency metrics ---
+        # --- one shared-sampling run for the structural-consistency metrics ---
         Z, weights = sample_perturbations(x, feature_std, N_PERTURB_SAMPLES, rng)
         proba = clf.predict_proba(Z)
         hard_labels = proba.argmax(axis=1)
@@ -77,16 +112,8 @@ def run_one_cell(n_features: int, n_classes: int, rng: np.random.Generator) -> l
         local_preds = {c: ovr[c]["local_pred"] for c in range(n_classes)}
         sum_dev = sum_to_one_deviation(local_preds)
 
-        ovr_diff_fn = lambda c1, c2: local_preds[c1] - local_preds[c2]  # noqa: E731
-
-        def fisher_diff_fn(c1, c2):
-            v = fisher["pairwise_direction"](c1, c2)
-            if v is None:
-                return None
-            return float(v @ x)
-
-        ovr_violation = transitivity_violation_rate(ovr_diff_fn, classes)
-        fisher_violation = transitivity_violation_rate(fisher_diff_fn, classes)
+        fisher_ovr_vecs = {c: fisher["onevsrest_direction"](c) for c in classes}
+        fisher_ovr_vecs = {c: v for c, v in fisher_ovr_vecs.items() if v is not None}
 
         # --- competing pair: predicted class vs runner-up, by black box ---
         x_proba = clf.predict_proba(x[None, :])[0]
@@ -111,14 +138,34 @@ def run_one_cell(n_features: int, n_classes: int, rng: np.random.Generator) -> l
         ovr_var = total_variance(ovr_diffs)
         fisher_var = total_variance(fisher_diffs) if len(fisher_diffs) >= 2 else float("nan")
 
-        rows.append(dict(
-            n_features=n_features, n_classes=n_classes,
-            sum_to_one_deviation=sum_dev,
-            ovr_transitivity_violation_rate=ovr_violation,
-            fisher_transitivity_violation_rate=fisher_violation,
-            ovr_pairdiff_variance=ovr_var,
-            fisher_pairdiff_variance=fisher_var,
-        ))
+        for K in k_values:
+            # Lasso-path-style selection: each class's K features are chosen
+            # independently by its own regularization path, so which K
+            # features "win" among the correlated group can genuinely differ
+            # across classes -- unlike Ridge-then-truncate, which mostly just
+            # re-ranks the same globally-informative features.
+            ovr_lasso = fit_onevsrest_lasso(Z, weights, proba, x, K)
+            ovr_topk = {c: ovr_lasso[c]["selected"] for c in range(n_classes)}
+            ovr_lasso_intercepts = {c: ovr_lasso[c]["intercept"] for c in range(n_classes)}
+            ovr_lasso_coefs = {c: ovr_lasso[c]["coef"] for c in range(n_classes)}
+
+            fisher_topk = {c: top_k_indices(v, K) for c, v in fisher_ovr_vecs.items()}
+
+            ovr_overlap = mean_pairwise_feature_overlap(ovr_topk)
+            fisher_overlap = mean_pairwise_feature_overlap(fisher_topk)
+
+            ovr_sum_dev_topk = sum_to_one_deviation_topk(
+                ovr_lasso_intercepts, ovr_lasso_coefs, ovr_topk, x)
+
+            rows.append(dict(
+                n_features=n_features, n_classes=n_classes, K=K,
+                sum_to_one_deviation=sum_dev,
+                sum_to_one_deviation_topk=ovr_sum_dev_topk,
+                ovr_feature_overlap=ovr_overlap,
+                fisher_feature_overlap=fisher_overlap,
+                ovr_pairdiff_variance=ovr_var,
+                fisher_pairdiff_variance=fisher_var,
+            ))
     return rows
 
 
@@ -137,12 +184,12 @@ def main():
     out_dir.mkdir(exist_ok=True)
     df.to_csv(out_dir / "experiment_results.csv", index=False)
 
-    summary = df.groupby(["n_features", "n_classes"]).mean(numeric_only=True)
+    summary = df.groupby(["n_features", "n_classes", "K"]).mean(numeric_only=True)
     summary.to_csv(out_dir / "experiment_summary.csv")
 
-    pd.set_option("display.width", 160)
+    pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", 20)
-    print("\n=== per-(n_features, n_classes) mean over instances/repeats ===")
+    print("\n=== per-(n_features, n_classes, K) mean over instances/repeats ===")
     print(summary)
 
     print("\n=== overall mean across all grid cells ===")
