@@ -10,41 +10,39 @@
 - 更新日時: 2026-09-01（Claude Code on the web、リモートセッション）
 - 作業環境: リモート実行環境（Claude Code）
 - ブランチ: `claude/lime-multiclass-consistency-u9jgn9`（PR #1）
-- 基準コミット: `e15a5d6`
+- 基準コミット: `8c72f4c`
 
 ## 今回の目的
 
-前回コミット（`e15a5d6`）でconsistency・stability実験を完走させた後、3つ目の評価軸である**忠実性（fidelity）**を実験で検証する。理論的に予想されていた「Fisherは忠実性で劣るはず」という弱点を、実測でどこまで・どういう形で成り立つか確認する。
+ユーザーから「stabilityの中心結果（Fisherが15〜100倍安定）には、Fisherベクトルの尺度が任意なのに生の分散を直接比較しているという測定上の疑義がある」との指摘を受け、検証・修正する。
 
 ## 実施した変更と主要な変更ファイル
 
-1. **`src/fidelity.py`**（新規）: 忠実性を測るための変換・損失関数。
-   - `onevsrest_predict_proba`: Ridge回帰の生出力を非負にクリップして正規化（確率として解釈するための後処理）。
-   - `fisher_predict_proba`: FisherのS_W・重心から、標準的なLDA確率モデル（マハラノビス距離＋事前確率のsoftmax、scikit-learnの`LinearDiscriminantAnalysis.predict_proba`と同じ考え方）で擬似確率を構成。ハード版・ソフト版どちらの`fit_fisher`結果にも使える。
-   - `weighted_hellinger_loss`: SLISEMAP論文（Eq.11）と同じ二乗Hellinger距離を、LIMEの近接度重みで加重平均。
-2. **`src/run_fidelity_experiment.py`**（新規）: 次元数×クラス数グリッドで one-vs-rest / Fisher(hard) / Fisher(soft) の忠実性を比較する実験ドライバ。`results/fidelity_results.csv`に出力。
+1. **`src/metrics.py`**: `total_variance`に警告docstringを追加（尺度の異なるベクトル間の生分散比較は無意味な場合があることを明記）。**`total_variance_normalized`**（各ベクトルを単位L2ノルムに正規化してから分散を取る、尺度不変の安定性指標）と`mean_norm`（ベクトルの平均大きさ、参考情報用）を追加。
+2. **`src/run_experiment.py`**: stability計算部分に正規化版の分散・平均ノルムを追加。生の分散（`ovr_pairdiff_variance`等）は透明性のため残しつつ、正しい比較には正規化版を使うようコメントで明記。
 
-## 重要な判断とその理由（★今回一番重要）
+## 重要な判断とその理由（★今回一番重要、これまでの中心結果を覆す訂正）
 
-1. **第1回実験（Fisherを標準の多クラス確率分類器として評価）は非常に悪い結果だった**。全体平均でHellinger損失が one-vs-rest 0.016 に対し Fisher(hard) 0.065（約5.6倍）、Fisher(soft) 0.035（約2.2倍）。さらに「黒箱が一番あり得るとするクラスと、Fisherが一番あり得るとするクラスの一致率（argmax agreement）」も one-vs-rest 76.5% に対し Fisher(hard/soft) 55%前後と大きく劣った。9グリッドセル全てで一貫してこの順序（one-vs-rest < Fisher(soft) < Fisher(hard)、値が小さいほど良い）。
-2. **【重要な訂正】上記は提案アルゴリズムの実際の使い方とズレたテストだった**。元の8ステップの設計（ステップ6-7）では、予測クラス$c^*$と競合クラス$c'$は**黒箱自身の`predict_proba`**から決め、Fisherはこの2クラス間の方向 $v(c^*,c')$ だけを担当する。Fisherに全クラスの中から1つを選ばせる（argmax）役割は元々与えられていない。
-3. **本来の使い方（黒箱が決めた2クラスのペア比較の符号一致率）で測り直したところ、ほぼ互角だった**。9グリッドセル平均で one-vs-rest 81.3% vs Fisher 80.4%（差は約1ポイント、セルごとに見ても最大でも数ポイント差で、明確な優劣はない）。
-4. **結論**：Fisherの弱点は「絶対確率値の推定（人に見せる数値としての信頼性）」に限定される。実際にこの手法が主張する「2クラスのどちらの証拠が強いか、その方向はどの特徴量か」という、LIMEの出力形式に相当する部分の忠実性は one-vs-rest とほぼ同等。修論では**「本手法が保証する範囲（ペア比較の方向）」と「保証しない範囲（絶対確率値としての解釈）」を明確に切り分けて書く**必要がある。
+1. **指摘は正しかった**。実測で確認したところ、Fisherのペア方向ベクトル$v(c^*,c')=S_W^{-1}(\mu_{c^*}-\mu_{c'})$は、one-vs-restの回帰係数差ベクトルより**常に約6〜15倍小さい大きさ**だった（5回中5回、9グリッドセル全てで一貫）。分散は大きさの2乗にほぼ比例するため、この尺度差だけで50〜225倍もの「見かけの分散差」が、実質的な安定性向上ゼロでも生まれる。
+2. **正規化（単位ベクトル化）して測り直すと、結果が逆転した**。全9グリッドセルで一貫して、**Fisher（ハード版）はone-vs-restより2〜4倍不安定**（全体平均で正規化分散 one-vs-rest 0.047 vs Fisher(hard) 0.117）。**これまで「一番説得力のある差別化ポイント」としていたstabilityの主張は撤回する**。
+3. **原因の切り分け**：ハードラベル版が不安定な原因は、以前発見した「クラスごとのサンプル飢餓」（局所近傍でそのクラスの点が少ない）と同根と考えられる。**ソフトラベル版で確認したところ、one-vs-restとほぼ同等（むしろ僅かに良い）水準まで回復した**（3セルで確認：例 n_features=14,n_classes=4で one-vs-rest 0.0654 vs Fisher(hard) 0.1274 vs Fisher(soft) 0.0621）。
+4. **feature overlap・fidelity実験は同じ問題を抱えていないことを確認済み**。
+   - feature overlap：`top_k_indices`は`argsort(-abs(vec))`による順位選択で、正の定数倍（および符号を除く負の定数倍）に対して不変。ベクトル同士の大きさを直接比較していないため無関係。
+   - fidelity：`fisher_predict_proba`は$S_W$（データから一意に決まる、任意に選んだ定数ではない実際のプールされた散布行列）を使うLDA確率モデルで、scikit-learnの`LinearDiscriminantAnalysis.predict_proba`と同じ確立された統計モデル。one-vs-rest側もRidge回帰が元々[0,1]の実確率値をターゲットにフィットしているため、両者とも生の大きさ比較ではなく、適切な単位の確率値同士を比較している。
 
 ## 実行したテスト・確認結果
 
-- `src/run_fidelity_experiment.py`をフルグリッド（n_features=[8,14,20]×n_classes=[3,4,5]）で完走。`results/fidelity_results.csv`に保存。
-- argmax一致率の検証、および「黒箱が選んだペアでの符号一致率」の検証はアドホックなスクリプトで実施（`results/`には未保存、本文書に数値を記録）。
+- `src/run_experiment.py`のstability計算部分を正規化版含めて更新し、フルグリッド（n_features=[8,14,20]×n_classes=[3,4,5]）で完走。`results/experiment_results.csv`に保存（正規化版の列を含む）。
+- ハード版・ソフト版・one-vs-restの正規化安定性をアドホックスクリプトで3セル（n_features×n_classes = (8,3),(14,4),(20,5)）比較し、ソフト版がハード版の不安定性を解消することを確認（`results/`には未保存）。
 
 ## 未完了・既知の問題・未検証事項
 
-- 「黒箱が選んだペアでの符号一致率」の検証は`src/`に恒久的なスクリプトとして残していない（アドホック実行のみ）。再現性のため、`src/run_fidelity_experiment.py`に正式な指標として組み込むことを検討する。
-- ソフトラベル版がなぜ`n_classes=7`でのみfeature overlapで有効なのかは未検証のまま（前回からの持ち越し）。
-- 実データセットでの再現性確認は未着手。
+- ソフト版の正規化安定性検証は3セルのみ。フルグリッドでの再現性は未確認。
+- ソフト版の正規化安定性検証を`src/investigate_reversal.py`または新規スクリプトとして恒久化していない（アドホック実行のみ）。
+- これで**stabilityは条件付き（ソフト版なら互角、ハード版なら劣る）**という扱いに変わったため、修論全体の「4指標の統合」（前回の次のアクション）の内容を作り直す必要がある。
 
 ## 次に行うこと
 
-1. 「黒箱が選んだペアでの符号一致率」を正式な指標として`src/fidelity.py`/`src/run_fidelity_experiment.py`に組み込み、再現可能にする。
-2. ソフト版が`n_classes=7`でのみfeature overlapに有効な理由を、重心間距離・S_Bの直接比較で検証する。
+1. ソフト版の正規化安定性をフルグリッドで検証し、`src/run_experiment.py`または専用スクリプトに正式に組み込む。
+2. 4指標（stability, feature overlap, sum-to-one, fidelity）の結果を、今回の訂正を反映して統合し直す。現時点でハード版Fisherを積極的に推せる指標はほぼ無く、ソフト版がstability・fidelityでは互角、feature overlapではむしろ悪化するという、より地味で正直な立ち位置になっている。この現実を修論にどう位置づけるか、方針を検討する必要がある。
 3. 実データセットでの再現性確認。
-4. ここまでの4指標（stability, feature overlap, sum-to-one, fidelity）の結果を統合し、修論の主張として文章化する。
