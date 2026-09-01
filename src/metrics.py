@@ -52,11 +52,50 @@ def transitivity_violation_rate(diff_fn, classes: np.ndarray) -> float:
 
 
 def total_variance(vectors: list[np.ndarray]) -> float:
-    """trace(Cov(vectors)) -- sum of per-coordinate variance across repeats."""
+    """trace(Cov(vectors)) -- sum of per-coordinate variance across repeats.
+
+    WARNING: this is only a fair comparison between two methods whose
+    output vectors live on the same natural scale. Fisher's pairwise
+    direction v = S_W^{-1}(mu_X-mu_Y) has an ARBITRARY scale set by the
+    magnitude of S_W (there is no canonical normalization -- rescaling S_W
+    by any constant rescales v with no change in what it means), unlike
+    one-vs-rest's regression coefficients, which are tied to the actual
+    prediction units (probability per unit z). Comparing raw variance
+    across such differently-scaled vectors is not meaningful on its own:
+    since Var scales roughly with squared magnitude, a vector that is
+    merely k times smaller in norm -- for no reason related to stability --
+    will show ~k^2 times lower raw variance. Use total_variance_normalized
+    for a scale-invariant comparison; report this raw version only
+    alongside the typical vector norms for context.
+    """
     if len(vectors) < 2:
         return float("nan")
     M = np.vstack(vectors)
     return float(np.var(M, axis=0, ddof=1).sum())
+
+
+def total_variance_normalized(vectors: list[np.ndarray]) -> float:
+    """Scale-invariant stability metric: normalize each vector to unit L2
+    norm before computing trace(Cov(.)) across repeats. This measures how
+    much the *direction* (which is the only part of these vectors that is
+    actually interpreted -- relative feature weights and signs) varies
+    under resampling, independent of each method's arbitrary output scale.
+    Bounded (unit vectors), so directly comparable between methods."""
+    unit_vecs = []
+    for v in vectors:
+        norm = np.linalg.norm(v)
+        if norm > 1e-12:
+            unit_vecs.append(v / norm)
+    if len(unit_vecs) < 2:
+        return float("nan")
+    M = np.vstack(unit_vecs)
+    return float(np.var(M, axis=0, ddof=1).sum())
+
+
+def mean_norm(vectors: list[np.ndarray]) -> float:
+    if not vectors:
+        return float("nan")
+    return float(np.mean([np.linalg.norm(v) for v in vectors]))
 
 
 def jaccard(a: frozenset, b: frozenset) -> float:

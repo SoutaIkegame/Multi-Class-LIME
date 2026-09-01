@@ -46,6 +46,8 @@ from metrics import (  # noqa: E402
     sum_to_one_deviation_topk,
     mean_pairwise_feature_overlap,
     total_variance,
+    total_variance_normalized,
+    mean_norm,
 )
 
 # n_features grid chosen to always leave room for redundant (correlated)
@@ -135,8 +137,18 @@ def run_one_cell(n_features: int, n_classes: int, rng: np.random.Generator) -> l
             if v_k is not None:
                 fisher_diffs.append(v_k)
 
+        # Raw-scale variance is NOT comparable across methods: Fisher's
+        # v = S_W^{-1}(mu_X-mu_Y) has an arbitrary scale set by S_W's
+        # magnitude, unlike one-vs-rest's regression coefficients. Report
+        # the scale-invariant (unit-norm) version as the headline stability
+        # metric, and the raw version + typical norms alongside it for
+        # transparency about the scale gap.
         ovr_var = total_variance(ovr_diffs)
         fisher_var = total_variance(fisher_diffs) if len(fisher_diffs) >= 2 else float("nan")
+        ovr_var_norm = total_variance_normalized(ovr_diffs)
+        fisher_var_norm = total_variance_normalized(fisher_diffs) if len(fisher_diffs) >= 2 else float("nan")
+        ovr_mean_norm = mean_norm(ovr_diffs)
+        fisher_mean_norm = mean_norm(fisher_diffs)
 
         for K in k_values:
             # Lasso-path-style selection: each class's K features are chosen
@@ -165,6 +177,10 @@ def run_one_cell(n_features: int, n_classes: int, rng: np.random.Generator) -> l
                 fisher_feature_overlap=fisher_overlap,
                 ovr_pairdiff_variance=ovr_var,
                 fisher_pairdiff_variance=fisher_var,
+                ovr_pairdiff_variance_normalized=ovr_var_norm,
+                fisher_pairdiff_variance_normalized=fisher_var_norm,
+                ovr_pairdiff_mean_norm=ovr_mean_norm,
+                fisher_pairdiff_mean_norm=fisher_mean_norm,
             ))
     return rows
 

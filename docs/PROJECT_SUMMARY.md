@@ -16,10 +16,12 @@
 - **重要な理論修正あり**：当初の「推移律が崩れる」という問題提起は数学的に成立しないことが判明（任意の実数の大小比較は常に推移的なため）。
 - **consistencyの正しい定義はLIMEtree（Sokol & Flach 2025）の一次資料に基づく**：「モデル同士が共通構造を共有しない・異なる特徴量部分集合を使う」ことが矛盾した説明の原因（p.5）。sum-to-oneや推移律そのものではない。
 - 実測で確認済みの結論（詳細は`docs/RECENT_WORK.md`参照）：
-  - **stability（ペア方向ベクトルの分散）は全実験設定を通じて一貫してFisher優位**（15〜100倍超）。最も頑健な差別化ポイント。
+  - **【重要な訂正あり】stability（ペア方向ベクトルの分散）の当初の結論（Fisherが15〜100倍安定）は測定上の誤りだった**。Fisherの方向ベクトル$v=S_W^{-1}(\mu_X-\mu_Y)$はone-vs-restの回帰係数差より常に6〜15倍小さい大きさで、これは尺度の違い（Fisherの出力に自然な単位がないこと）によるもの。分散を尺度不変な形（単位ベクトルに正規化してから比較）で測り直すと、**Fisher（ハード版）はone-vs-restより2〜4倍不安定**という逆の結果になった。ハードラベル版でのこの不安定性は、局所近傍でのクラスごとのサンプル飢餓が原因と考えられ、**ソフトラベル版に切り替えるとone-vs-restとほぼ同等の安定性に回復する**ことを確認済み（詳細な検証は3セルのみ、フルグリッドでの再現は未実施）。
+  - feature overlap・fidelity実験は、この尺度の問題を抱えていないことを確認済み（feature overlapは順位のみ使うため尺度不変、fidelityは両手法とも適切な単位の確率値に変換してから比較しているため）。以下の結論はそのまま有効。
   - **feature overlap（LIMEtreeの主張の直接的な操作化）はFisherが優位になる条件と、逆転する条件が両方ある**。真のLasso選択＋相関の強い特徴量がある設定では概ねFisher優位だが、クラス数が多いとFisherのハードラベル設計がクラスを局所近傍から丸ごと欠落させる問題があり、これが逆転の主因（冗長特徴量の予算不足ではない）。
   - ソフトラベル版Fisher（`fit_fisher_soft`）はこの欠落は解消するが、feature overlap自体は多くの条件でむしろ悪化する（クラス間の分離が弱まるため）。単純な優劣ではなくトレードオフとして扱うべき。
   - **fidelity（忠実性）は測り方で結論が変わる**。Fisherを標準の多クラス確率分類器として評価すると one-vs-rest に大きく劣る（Hellinger損失で2〜6倍、argmax一致率でも76.5%対55%前後）。しかし提案アルゴリズムが実際に使う量（黒箱が決めた予測クラス$c^*$と競合クラス$c'$のペア比較の符号）で測り直すと、one-vs-rest 81.3% vs Fisher 80.4%とほぼ互角。**Fisherの忠実性の弱さは「絶対確率値としての解釈」に限定され、「2クラス比較の方向」としての忠実性はone-vs-restと同等**、という切り分けが重要。
+  - **現時点の全体像**：当初考えていたほど明確な優位性はハード版Fisherにはない（stability・feature overlap(高クラス数)・fidelity(絶対値)のいずれも劣る）。ソフト版はstability・fidelityでone-vs-restとほぼ互角まで回復するが、feature overlapは悪化しやすい。「Fisherが勝つ」という単純な主張ではなく、**指標ごとに条件付きで一長一短がある**、という正直な立ち位置。
 
 ## 主要な構成
 
@@ -33,7 +35,9 @@
 - `src/metrics.py`: consistency・stability指標。
   - `sum_to_one_deviation` / `sum_to_one_deviation_topk`: 全特徴量時と top-K切り詰め後のsum-to-one逸脱。
   - `mean_pairwise_feature_overlap`: LIMEtreeの主張（共通構造の有無）を操作化した、クラス間top-K特徴量集合の平均Jaccard重なり。
-  - `total_variance`: stability指標（ペア方向ベクトルの分散のtrace）。
+  - `total_variance`: stability指標（ペア方向ベクトルの分散のtrace）。**警告**：Fisherとone-vs-restの出力ベクトルは尺度が異なるため、これを直接比較するのは誤り（詳細は`docs/RECENT_WORK.md`）。
+  - `total_variance_normalized`: 尺度不変のstability指標（単位ベクトルに正規化してから分散を取る）。**手法間の比較には必ずこちらを使う**。
+  - `mean_norm`: ベクトルの平均大きさ（尺度差を確認するための参考情報）。
   - `transitivity_violation_rate`: **理論的に常に0になるため実験では未使用**。docstringに理由を明記した上でコードのみ残置。
 - `src/run_experiment.py`: 次元数×クラス数×Kのグリッドで両手法を比較する実験ドライバ。完走済み、結果は`results/experiment_results.csv`等に出力。
 - `src/investigate_reversal.py`: feature overlapでFisherの優位性が逆転する条件（高クラス数）の原因を切り分ける診断スクリプト。ハード版・ソフト版Fisherを同時比較する。
@@ -70,6 +74,7 @@ python3 src/investigate_reversal.py   # 高クラス数での逆転を調べる�
 
 ## 既知の制約・リスク
 
+- **手法間で出力ベクトルの生の大きさ・分散を直接比較しない**。Fisherの$v=S_W^{-1}(\mu_X-\mu_Y)$には自然な尺度がなく、one-vs-restの回帰係数と直接比較すると尺度差だけで数十〜数百倍の見かけの差が生まれる。比較する際は必ず正規化（`total_variance_normalized`など）を使うか、両手法とも適切な単位（実際の確率値など）に変換してから比較すること。
 - `transitivity_violation_rate`（推移律違反率）という指標は理論的に常に0になる無意味な指標であることが判明。使用しない（docstringに理由明記済み）。
 - sum-to-one（$\hat P(A)+\hat P(B)+\hat P(C)=1$）は、one-vs-rest側が全特徴量を使った同一設計の回帰であれば厳密に成立してしまう。崩れを見たい場合はtop-K切り詰め（`sum_to_one_deviation_topk`）で検証する。
 - **Fisher（ハードラベル版）はクラス数が多い、または局所サンプル数が少ない場合、局所近傍にそのクラスのサンプルが1つも現れず、そのクラスの説明が丸ごと欠落することがある**（`min_class_count_avg`が0近くになる事例を確認済み）。ソフトラベル版はこの欠落を解消するが、feature overlap自体はむしろ悪化する条件が多い。単純にどちらかを常に推奨できる状態ではない。
@@ -80,5 +85,6 @@ python3 src/investigate_reversal.py   # 高クラス数での逆転を調べる�
 - consistencyの主張を、実測で裏付けられる正確な形（LIMEtreeの「共通構造の有無」の定義に基づく、条件付きの主張）に修論の記述を修正する。
 - ハード版・ソフト版Fisherのトレードオフを理論的に説明する（重心間距離・S_Bの直接比較など）。ハイブリッド案（局所サンプルが少ないクラスだけソフトにフォールバック）の検討。
 - 「黒箱が選んだペアでの符号一致率」（fidelityの最終的に妥当な定義）を`src/`に正式な指標として組み込む（現状アドホック実行のみ）。
-- stability・feature overlap・sum-to-one・fidelityの4指標を統合し、修論の主張として文章化する。
+- ソフト版の正規化stabilityをフルグリッドで再検証し、恒久的なスクリプトとして組み込む（現状3セルのアドホック検証のみ）。
+- stability・feature overlap・sum-to-one・fidelityの4指標を、今回のstability訂正を踏まえて統合し直し、修論の主張として文章化する。「Fisherが優れている」という単純な主張ではなく、条件付き・トレードオフとして誠実に書く必要がある。
 - 実データセットでの再現性確認。
