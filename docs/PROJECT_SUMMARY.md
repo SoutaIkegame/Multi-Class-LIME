@@ -23,6 +23,7 @@
   - **fidelity（忠実性）は測り方で結論が変わる**。Fisherを標準の多クラス確率分類器として評価すると one-vs-rest に大きく劣る（Hellinger損失で2〜6倍、argmax一致率でも76.5%対55%前後）。しかし提案アルゴリズムが実際に使う量（黒箱が決めた予測クラス$c^*$と競合クラス$c'$のペア比較の符号）で測り直すと、one-vs-rest 81.3% vs Fisher 80.4%とほぼ互角。**Fisherの忠実性の弱さは「絶対確率値としての解釈」に限定され、「2クラス比較の方向」としての忠実性はone-vs-restと同等**、という切り分けが重要。
   - **現時点の全体像**：当初考えていたほど明確な優位性はハード版Fisherにはない（stability・feature overlap(高クラス数)・fidelity(絶対値)のいずれも劣る）。ソフト版はstability・fidelityでone-vs-restとほぼ互角まで回復するが、feature overlapは悪化しやすい。「Fisherが勝つ」という単純な主張ではなく、**指標ごとに条件付きで一長一短がある**、という正直な立ち位置。
   - **4手法目「Contrastive LIME」を追加検証**：one-vs-restを2本フィットして引くのではなく、$\log(p_A/p_B)$を直接回帰する方式（ユーザー提案）。理論的には忠実性で明確に勝つと予想したが、実測ではone-vs-restとほぼ完全な同点だった（同一設計のRidge回帰なら「引き算」と「直接回帰」が線形性により数学的に一致するため）。stabilityはone-vs-restと同格（Fisherより良い）。feature overlapはFisherとone-vs-restの中間だが、比較単位（クラス間 vs ペア間）が異なるため直接の優劣比較ではない。
+  - **極端確率領域での検証**：競合する2クラスの一方の確率が0に近い局所領域に絞ってfidelityを測ると、Contrastiveのone-vs-restに対する優位性は「弱いが本物」（平均+0.8ポイント、穏やかな領域では約0ポイント）。効果量は小さく、決定的な差別化ポイントとまでは言えない。一方、**Fisher(hard)はこの極端領域で一貫して3〜4ポイント劣化**しており、これはfeature overlap・stabilityでも見られた「ハードラベルによるサンプル飢餓」が3つ目の独立した文脈で再確認された形になる。
 
 ## 主要な構成
 
@@ -47,6 +48,7 @@
 - `src/fidelity.py`: 忠実性（fidelity）評価用の確率変換・損失関数。`onevsrest_predict_proba`（Ridge出力のクリップ＋正規化）、`fisher_predict_proba`（LDA確率モデルによる擬似確率、`LinearDiscriminantAnalysis.predict_proba`と同じ考え方）、`weighted_hellinger_loss`（SLISEMAP Eq.11と同じ二乗Hellinger距離）。
 - `src/run_fidelity_experiment.py`: 次元数×クラス数グリッドでone-vs-rest / Fisher(hard) / Fisher(soft)の忠実性を比較する実験ドライバ。結果は`results/fidelity_results.csv`。
 - `src/run_contrastive_experiment.py`: one-vs-rest / Fisher(hard) / Contrastiveの3手法を、fidelity・stability（正規化）・feature overlapの3指標で同時比較するグリッド実験。結果は`results/contrastive_results.csv`。
+- `src/run_extreme_regime_experiment.py`: 同じ局所近傍を「競合2クラスの確率が両方とも極端（一方が閾値未満）」と「穏やか」に分割し、fidelityを領域別に比較するグリッド実験。結果は`results/extreme_regime_results.csv`。
 - `.venv/`: Python仮想環境（`.gitignore`で除外、コミット対象外）。
 
 ## セットアップと実行方法
@@ -90,6 +92,5 @@ python3 src/investigate_reversal.py   # 高クラス数での逆転を調べる�
 - ハード版・ソフト版Fisherのトレードオフを理論的に説明する（重心間距離・S_Bの直接比較など）。ハイブリッド案（局所サンプルが少ないクラスだけソフトにフォールバック）の検討。
 - ソフト版の正規化stabilityをフルグリッドで再検証し、恒久的なスクリプトとして組み込む（現状3セルのアドホック検証のみ）。
 - feature overlapの「クラス間 vs ペア間」という比較単位の不一致を解消し、Contrastive・Fisher・one-vs-restを公平に再比較する。
-- Contrastiveのfidelity優位性は確率が0/1に近い極端な領域で出る可能性があり、専用の検証が必要。
-- one-vs-rest, Fisher(hard/soft), Contrastiveの4手法×fidelity・stability・feature overlap・sum-to-oneの結果を統合し、修論の主張として文章化する。「Fisherが優れている」という単純な主張ではなく、条件付き・トレードオフとして誠実に書く必要がある。
+- one-vs-rest, Fisher(hard/soft), Contrastiveの4手法×fidelity・stability・feature overlap・sum-to-one・極端領域fidelityの結果を統合し、修論の主張として文章化する。「Fisherが優れている」という単純な主張ではなく、条件付き・トレードオフとして誠実に書く必要がある。
 - 実データセットでの再現性確認。

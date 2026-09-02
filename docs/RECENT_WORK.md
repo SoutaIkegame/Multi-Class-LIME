@@ -10,37 +10,34 @@
 - 更新日時: 2026-09-01（Claude Code on the web、リモートセッション）
 - 作業環境: リモート実行環境（Claude Code）
 - ブランチ: `claude/lime-multiclass-consistency-u9jgn9`（PR #1）
-- 基準コミット: `afd0584`
+- 基準コミット: `322c4e0`
 
 ## 今回の目的
 
-ユーザー提案の「Contrastive LIME」（one-vs-restを2本フィットしてから引くのではなく、$\log\frac{p_A(z)+\varepsilon}{p_B(z)+\varepsilon}$を目的変数にして直接回帰する第3の手法）を実装し、one-vs-rest・Fisher(hard)と同じ3指標（fidelity, stability, feature overlap）で比較する。
+前回の未検証事項「Contrastive LIMEの優位性は、確率が0/1に近い極端な領域でより顕著に出るかもしれない」を検証する。
 
 ## 実施した変更と主要な変更ファイル
 
-1. **`src/surrogates.py`**: `fit_contrastive`（$\log((p_{c1}+\varepsilon)/(p_{c2}+\varepsilon))$を目的変数にした重み付きRidge回帰）、`fit_contrastive_lasso`（同じ目的変数でのLasso選択版、feature overlap実験用）を追加。
-2. **`src/run_contrastive_experiment.py`**（新規）：one-vs-rest / Fisher(hard) / Contrastiveの3手法を、fidelity（黒箱が選んだペアでの符号一致率）・stability（正規化分散）・feature overlap（Lasso top-K重なり）で同時比較するグリッド実験。
+1. **`src/run_extreme_regime_experiment.py`**（新規）：one-vs-rest / Fisher(hard) / Contrastiveの3手法について、同じ局所近傍のサンプルを「競合する2クラスのうち小さい方の確率が閾値0.15未満（極端領域）」と「それ以外（穏やかな領域）」に分割し、fidelity（符号一致率）を領域ごとに別々に測定するグリッド実験。
 
 ## 重要な判断とその理由
 
-1. **fidelityは理論的な予想（Contrastiveが明確に勝つ）が外れ、3手法ほぼ同点だった**（全体平均 one-vs-rest 0.799, Fisher 0.791, Contrastive 0.800）。理由：one-vs-restの「$p_A$の回帰」から「$p_B$の回帰」を引く操作は、同一設計（同じ特徴量・重み・Ridge）である限り、線形性により**$p_A-p_B$を直接回帰したものと数学的に完全に一致する**（以前発見したsum-to-oneの理屈と同型）。Contrastiveが変えたのは「差分ではなくlog比」という点だけで、符号一致率という指標にはこの違いがほとんど効かなかった。
-2. **stabilityは予想通り、one-vs-restとほぼ同格**（正規化分散 one-vs-rest 0.047 vs Contrastive 0.046）で、Fisher(hard)の0.117よりずっと安定。Contrastiveは1回のRidge回帰という点でone-vs-restと同じ仕組みのため、妥当な結果。
-3. **feature overlapは予想と半分違った**。「ペアごとに独立フィットするので共有構造がなく、Fisherより悪化するはず」と予想していたが、実際は one-vs-rest(0.458) < Contrastive(0.485) < Fisher(0.518) で、Fisherより低いがone-vs-restより高かった。**ただし比較の単位が異なる点に注意**：one-vs-rest/Fisherは「クラス間」（n_classes個の説明）の重なり、Contrastiveは「ペア間」（C(n_classes,2)個の説明）の重なりを見ており、直接の優劣比較ではない。合成データの構造上、全ペアの境界を分ける「核となる特徴量」が共通している可能性があり、明示的な共有構造がなくてもある程度自然に重なりが生まれたと考えられる。
+1. **仮説は「弱いが本物」だった**。極端領域（局所近傍の平均20.2%を占める）でのContrastive−one-vs-restの符号一致率の差は平均+0.008（0.8ポイント）、穏やかな領域では平均+0.0002（ほぼゼロ）。方向としては仮説通りだが、効果量は小さい（9セル中最大でも+0.040、多くは1ポイント未満）。「劇的に効く」ものではなく「弱いが一貫した方向のシグナル」という結論。
+2. **副産物：Fisher(hard)の弱点が3つ目の独立した文脈で再確認された**。極端領域でのFisher(hard)のfidelityは、one-vs-rest・Contrastiveより一貫して3〜4ポイント低かった（穏やかな領域では1ポイント未満の差）。極端領域＝競合する2クラスの片方が局所的にほぼ負けている状況では、そのクラスのハードラベルサンプルが希少になりやすく、これまで発見してきた「サンプル飢餓による重心の不安定化」（feature overlapでのクラス欠落、stabilityでの不安定性）と同じ根本原因が、fidelityという別の指標でも一貫して現れることが確認できた。
 
 ## 実行したテスト・確認結果
 
-- `src/run_contrastive_experiment.py`をフルグリッド（n_features=[8,14,20]×n_classes=[3,4,5]×K∈{0.3,0.6}×n_features）で完走。`results/contrastive_results.csv`に保存。
+- アドホックスクリプトで閾値0.05（近傍の0.5〜1.2%のみが該当、サンプル数不足で判断材料に乏しい）と0.15（近傍の20.2%が該当、判断可能な規模）の両方を試し、0.15版を`src/run_extreme_regime_experiment.py`として恒久化。フルグリッド（n_features=[8,14,20]×n_classes=[3,4,5]）で完走、`results/extreme_regime_results.csv`に保存。
 
 ## 未完了・既知の問題・未検証事項
 
-- fidelityの差が出なかったのは「符号一致率」という指標が粗すぎる可能性がある。log比と生の差分の違いは、確率が0/1に近い極端な領域でより顕著に出るかもしれない（未検証）。
-- feature overlapの「クラス間 vs ペア間」という比較単位の違いを解消した、より公平な指標が必要（例：one-vs-rest/Fisherも「予測クラス vs 各対抗クラス」のペア単位で揃えて再比較する）。
-- Contrastiveのfeature overlapが理論的懸念（共有構造なし）ほど悪化しなかった理由は、合成データの構造への依存を疑っており、実データまたはより特徴量間の相関構造を変えたデータでの再検証が必要。
+- 効果量が小さいため、この結果だけでは「Contrastiveを推す決定的な根拠」としては弱い。閾値やサンプル数を変えた頑健性チェックは未実施。
+- feature overlapの「クラス間 vs ペア間」という比較単位の違いを解消した、より公平な指標はまだ未実装（前回からの持ち越し）。
+- ソフト版Fisherの正規化安定性のフルグリッド検証はまだ未実施（前回からの持ち越し）。
 
 ## 次に行うこと
 
 1. feature overlapの比較単位をクラス間・ペア間で統一し、Contrastive vs Fisher vs one-vs-restを公平に再比較する。
-2. 確率が極端な領域（0または1に近い）でのContrastiveの優位性を、専用の検証で確認する。
-3. ソフト版Fisherの正規化安定性をフルグリッドで検証する（前回からの持ち越し）。
-4. 4手法（one-vs-rest, Fisher(hard/soft), Contrastive）×3指標の結果を統合し、修論の主張として文章化する。
-5. 実データセットでの再現性確認。
+2. ソフト版Fisherの正規化安定性をフルグリッドで検証する。
+3. 4手法（one-vs-rest, Fisher(hard/soft), Contrastive）×4指標（fidelity, stability, feature overlap, 極端領域fidelity）の結果を統合し、修論の主張として文章化する。現時点でContrastiveは「stabilityで同格、fidelityでほぼ同格（極端領域でわずかに優位）、feature overlapで中間」という、突出した勝ちどころのない地味な立ち位置。
+4. 実データセットでの再現性確認。
