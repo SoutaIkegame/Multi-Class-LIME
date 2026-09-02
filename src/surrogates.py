@@ -88,6 +88,51 @@ def fit_onevsrest_lasso(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, x
     return out
 
 
+def fit_contrastive(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, c1: int, c2: int,
+                     x: np.ndarray, eps: float = 1e-6, alpha: float = 1.0) -> dict:
+    """"Contrastive LIME": instead of fitting two one-vs-rest surrogates and
+    subtracting them, directly regress log((p_c1+eps)/(p_c2+eps)) on z. For
+    a softmax black box this target equals the raw score difference
+    s_c1 - s_c2, so sign(prediction) == sign(p_c1(z) - p_c2(z)) exactly,
+    and third classes cannot distort the c1-vs-c2 boundary the way they can
+    distort the magnitude of a raw probability difference p_c1 - p_c2.
+
+    Unlike fit_onevsrest_lasso's per-class independent fits or fit_fisher's
+    shared-S_W pooling, this is fit independently PER PAIR: nothing forces
+    g(A,B), g(B,C), g(A,C) to share structure, so LIMEtree's "different
+    feature subsets" failure mode can still occur across pairs even though
+    each individual pair's fidelity should be excellent (it directly
+    optimizes the quantity being displayed).
+    """
+    y = np.log((proba[:, c1] + eps) / (proba[:, c2] + eps))
+    model = Ridge(alpha=alpha)
+    model.fit(Z, y, sample_weight=weights)
+    local_pred = float(model.predict(x[None, :])[0])
+    return {"coef": model.coef_.copy(), "intercept": float(model.intercept_), "local_pred": local_pred}
+
+
+def fit_contrastive_lasso(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, c1: int, c2: int,
+                           x: np.ndarray, K: int, eps: float = 1e-6) -> dict:
+    """Lasso-selected (top-K feature) version of fit_contrastive, for the
+    feature-overlap experiment -- mirrors fit_onevsrest_lasso's methodology
+    but on the log-odds-of-the-pair target."""
+    y = np.log((proba[:, c1] + eps) / (proba[:, c2] + eps))
+    model = _sparsest_lasso_with_at_least_k(Z, weights, y, K)
+    coef = model.coef_.copy()
+    idx = np.argsort(-np.abs(coef))[:K]
+    mask = np.zeros_like(coef, dtype=bool)
+    mask[idx] = True
+    coef_masked = np.where(mask, coef, 0.0)
+    intercept = float(model.intercept_)
+    local_pred = float(intercept + coef_masked @ x)
+    return {
+        "coef": coef_masked,
+        "intercept": intercept,
+        "local_pred": local_pred,
+        "selected": frozenset(idx.tolist()),
+    }
+
+
 def fit_fisher(Z: np.ndarray, weights: np.ndarray, hard_labels: np.ndarray,
                classes: np.ndarray, shrinkage: float = 1e-3) -> dict:
     """Multiclass Fisher LDA surrogate with a single pooled S_W across all
