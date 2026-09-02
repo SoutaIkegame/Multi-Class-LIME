@@ -123,11 +123,13 @@ def recover_proba(fit_result: dict, Z: np.ndarray, n_classes: int) -> np.ndarray
 
     ell = Z @ B + b[None, :]  # (N, n_classes-1): log(p_r/p_k) for each k
     ell = np.clip(ell, -30, 30)  # avoid overflow in exp
-    denom = 1.0 + np.exp(ell).sum(axis=1)
+    # ell_k = log(p_r/p_k)  =>  p_k = p_r * exp(-ell_k)
+    # p_r + sum_k p_r*exp(-ell_k) = 1  =>  p_r = 1 / (1 + sum_k exp(-ell_k))
+    denom = 1.0 + np.exp(-ell).sum(axis=1)
     p_r = 1.0 / denom
 
     proba = np.zeros((Z.shape[0], n_classes))
     proba[:, r] = p_r
     for j, k in enumerate(other_classes):
-        proba[:, k] = np.exp(ell[:, j]) * p_r
+        proba[:, k] = np.exp(-ell[:, j]) * p_r
     return proba

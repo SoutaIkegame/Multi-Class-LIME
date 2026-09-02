@@ -24,7 +24,8 @@
   - **現時点の全体像**：当初考えていたほど明確な優位性はハード版Fisherにはない（stability・feature overlap(高クラス数)・fidelity(絶対値)のいずれも劣る）。ソフト版はstability・fidelityでone-vs-restとほぼ互角まで回復するが、feature overlapは悪化しやすい。「Fisherが勝つ」という単純な主張ではなく、**指標ごとに条件付きで一長一短がある**、という正直な立ち位置。
   - **4手法目「Contrastive LIME」を追加検証**：one-vs-restを2本フィットして引くのではなく、$\log(p_A/p_B)$を直接回帰する方式（ユーザー提案）。理論的には忠実性で明確に勝つと予想したが、実測ではone-vs-restとほぼ完全な同点だった（同一設計のRidge回帰なら「引き算」と「直接回帰」が線形性により数学的に一致するため）。stabilityはone-vs-restと同格（Fisherより良い）。feature overlapはFisherとone-vs-restの中間だが、比較単位（クラス間 vs ペア間）が異なるため直接の優劣比較ではない。
   - **極端確率領域での検証**：競合する2クラスの一方の確率が0に近い局所領域に絞ってfidelityを測ると、Contrastiveのone-vs-restに対する優位性は「弱いが本物」（平均+0.8ポイント、穏やかな領域では約0ポイント）。効果量は小さく、決定的な差別化ポイントとまでは言えない。一方、**Fisher(hard)はこの極端領域で一貫して3〜4ポイント劣化**しており、これはfeature overlap・stabilityでも見られた「ハードラベルによるサンプル飢餓」が3つ目の独立した文脈で再確認された形になる。
-  - **5手法目「Group Lasso（参照クラス型対数オッズ比の同時推定）」を追加検証**：黒箱の予測クラスを参照クラスとし、全競合クラスとの対数オッズ比を`MultiTaskLasso`（行単位group lasso）で同時フィット。**feature overlapは構造的な保証通り9セル全て厳密に1.000**（one-vs-rest 0.458, Fisher 0.518を大きく上回る、推定ではなく直接検証済み）。符号一致率・stabilityもone-vs-restと同格かそれ以上。**しかし絶対確率へのHellinger忠実性はone-vs-restの24倍、Fisherの7倍悪化**（原因：多項ロジット復元式の$\exp$が線形フィットの残差誤差を指数的に増幅するため。正則化強度やepsでは解決しないことを確認済み）。Fisherと同じ「構造を共有する設計は、ペア比較の方向は保つが絶対確率忠実性を犠牲にする」というパターンが2例目として確認された。
+  - **5手法目「Group Lasso（参照クラス型対数オッズ比の同時推定）」を追加検証**：黒箱の予測クラスを参照クラスとし、全競合クラスとの対数オッズ比を`MultiTaskLasso`（行単位group lasso）で同時フィット。**feature overlapは構造的な保証通り9セル全て厳密に1.000**（one-vs-rest 0.458, Fisher 0.518を大きく上回る、推定ではなく直接検証済み）。符号一致率・stabilityもone-vs-restと同格以上。
+  - **【重要な訂正】確率復元式`recover_proba`に符号バグがあった**（$e^{+\ell_k}$を使っていたが正しくは$e^{-\ell_k}$）。バグ修正前は「絶対確率忠実性がone-vs-restの24倍悪化し、Fisherと同じ構造共有トレードオフの2例目」という結論だったが、**修正後はHellinger忠実性がone-vs-restとほぼ同等（Fisherより3.4倍良い）まで改善し、Group Lassoは4指標（fidelity, sign fidelity, stability, feature overlap）すべてでone-vs-rest以上という、トレードオフなしの結果になった**。「構造共有は絶対確率忠実性を犠牲にする」という一般化した主張は撤回する。この経緯は、実装の細部（特に符号）を検算せずに実測結果だけで結論を出すことの危険性を示す教訓として記録している。
 
 ## 主要な構成
 
@@ -95,6 +96,5 @@ python3 src/investigate_reversal.py   # 高クラス数での逆転を調べる�
 - ハード版・ソフト版Fisherのトレードオフを理論的に説明する（重心間距離・S_Bの直接比較など）。ハイブリッド案（局所サンプルが少ないクラスだけソフトにフォールバック）の検討。
 - ソフト版の正規化stabilityをフルグリッドで再検証し、恒久的なスクリプトとして組み込む（現状3セルのアドホック検証のみ）。
 - feature overlapの「クラス間 vs ペア間 vs 構造的保証」という3種類の比較単位の不一致を解消し、Contrastive・Fisher・one-vs-rest・Group Lassoを公平に再比較する。
-- Group LassoのHellinger忠実性を改善する方法を検討する（exp前のクリッピング、ソフトラベル重み付けなど）。
-- one-vs-rest, Fisher(hard/soft), Contrastive, Group Lassoの5手法×fidelity・stability・feature overlap・sum-to-one・極端領域fidelityの結果を統合し、修論の主張として文章化する。「構造の共有と絶対確率忠実性はトレードオフの関係にある」という一般化した主張が中心になりそう。「Fisherが優れている」という単純な主張ではなく、条件付き・トレードオフとして誠実に書く必要がある。
+- one-vs-rest, Fisher(hard/soft), Contrastive, Group Lassoの5手法×fidelity・stability・feature overlap・sum-to-one・極端領域fidelityの結果を統合し、修論の主張として文章化する。**現時点でGroup Lassoが4指標中4つで最良という最有力候補**。「Fisherが優れている」という単純な主張ではなく、条件付き・トレードオフとして誠実に書く必要がある（ただしGroup Lassoについては今のところトレードオフが見つかっていない点も正直に書く）。
 - 実データセットでの再現性確認。
