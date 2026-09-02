@@ -10,39 +10,37 @@
 - 更新日時: 2026-09-01（Claude Code on the web、リモートセッション）
 - 作業環境: リモート実行環境（Claude Code）
 - ブランチ: `claude/lime-multiclass-consistency-u9jgn9`（PR #1）
-- 基準コミット: `8c72f4c`
+- 基準コミット: `afd0584`
 
 ## 今回の目的
 
-ユーザーから「stabilityの中心結果（Fisherが15〜100倍安定）には、Fisherベクトルの尺度が任意なのに生の分散を直接比較しているという測定上の疑義がある」との指摘を受け、検証・修正する。
+ユーザー提案の「Contrastive LIME」（one-vs-restを2本フィットしてから引くのではなく、$\log\frac{p_A(z)+\varepsilon}{p_B(z)+\varepsilon}$を目的変数にして直接回帰する第3の手法）を実装し、one-vs-rest・Fisher(hard)と同じ3指標（fidelity, stability, feature overlap）で比較する。
 
 ## 実施した変更と主要な変更ファイル
 
-1. **`src/metrics.py`**: `total_variance`に警告docstringを追加（尺度の異なるベクトル間の生分散比較は無意味な場合があることを明記）。**`total_variance_normalized`**（各ベクトルを単位L2ノルムに正規化してから分散を取る、尺度不変の安定性指標）と`mean_norm`（ベクトルの平均大きさ、参考情報用）を追加。
-2. **`src/run_experiment.py`**: stability計算部分に正規化版の分散・平均ノルムを追加。生の分散（`ovr_pairdiff_variance`等）は透明性のため残しつつ、正しい比較には正規化版を使うようコメントで明記。
+1. **`src/surrogates.py`**: `fit_contrastive`（$\log((p_{c1}+\varepsilon)/(p_{c2}+\varepsilon))$を目的変数にした重み付きRidge回帰）、`fit_contrastive_lasso`（同じ目的変数でのLasso選択版、feature overlap実験用）を追加。
+2. **`src/run_contrastive_experiment.py`**（新規）：one-vs-rest / Fisher(hard) / Contrastiveの3手法を、fidelity（黒箱が選んだペアでの符号一致率）・stability（正規化分散）・feature overlap（Lasso top-K重なり）で同時比較するグリッド実験。
 
-## 重要な判断とその理由（★今回一番重要、これまでの中心結果を覆す訂正）
+## 重要な判断とその理由
 
-1. **指摘は正しかった**。実測で確認したところ、Fisherのペア方向ベクトル$v(c^*,c')=S_W^{-1}(\mu_{c^*}-\mu_{c'})$は、one-vs-restの回帰係数差ベクトルより**常に約6〜15倍小さい大きさ**だった（5回中5回、9グリッドセル全てで一貫）。分散は大きさの2乗にほぼ比例するため、この尺度差だけで50〜225倍もの「見かけの分散差」が、実質的な安定性向上ゼロでも生まれる。
-2. **正規化（単位ベクトル化）して測り直すと、結果が逆転した**。全9グリッドセルで一貫して、**Fisher（ハード版）はone-vs-restより2〜4倍不安定**（全体平均で正規化分散 one-vs-rest 0.047 vs Fisher(hard) 0.117）。**これまで「一番説得力のある差別化ポイント」としていたstabilityの主張は撤回する**。
-3. **原因の切り分け**：ハードラベル版が不安定な原因は、以前発見した「クラスごとのサンプル飢餓」（局所近傍でそのクラスの点が少ない）と同根と考えられる。**ソフトラベル版で確認したところ、one-vs-restとほぼ同等（むしろ僅かに良い）水準まで回復した**（3セルで確認：例 n_features=14,n_classes=4で one-vs-rest 0.0654 vs Fisher(hard) 0.1274 vs Fisher(soft) 0.0621）。
-4. **feature overlap・fidelity実験は同じ問題を抱えていないことを確認済み**。
-   - feature overlap：`top_k_indices`は`argsort(-abs(vec))`による順位選択で、正の定数倍（および符号を除く負の定数倍）に対して不変。ベクトル同士の大きさを直接比較していないため無関係。
-   - fidelity：`fisher_predict_proba`は$S_W$（データから一意に決まる、任意に選んだ定数ではない実際のプールされた散布行列）を使うLDA確率モデルで、scikit-learnの`LinearDiscriminantAnalysis.predict_proba`と同じ確立された統計モデル。one-vs-rest側もRidge回帰が元々[0,1]の実確率値をターゲットにフィットしているため、両者とも生の大きさ比較ではなく、適切な単位の確率値同士を比較している。
+1. **fidelityは理論的な予想（Contrastiveが明確に勝つ）が外れ、3手法ほぼ同点だった**（全体平均 one-vs-rest 0.799, Fisher 0.791, Contrastive 0.800）。理由：one-vs-restの「$p_A$の回帰」から「$p_B$の回帰」を引く操作は、同一設計（同じ特徴量・重み・Ridge）である限り、線形性により**$p_A-p_B$を直接回帰したものと数学的に完全に一致する**（以前発見したsum-to-oneの理屈と同型）。Contrastiveが変えたのは「差分ではなくlog比」という点だけで、符号一致率という指標にはこの違いがほとんど効かなかった。
+2. **stabilityは予想通り、one-vs-restとほぼ同格**（正規化分散 one-vs-rest 0.047 vs Contrastive 0.046）で、Fisher(hard)の0.117よりずっと安定。Contrastiveは1回のRidge回帰という点でone-vs-restと同じ仕組みのため、妥当な結果。
+3. **feature overlapは予想と半分違った**。「ペアごとに独立フィットするので共有構造がなく、Fisherより悪化するはず」と予想していたが、実際は one-vs-rest(0.458) < Contrastive(0.485) < Fisher(0.518) で、Fisherより低いがone-vs-restより高かった。**ただし比較の単位が異なる点に注意**：one-vs-rest/Fisherは「クラス間」（n_classes個の説明）の重なり、Contrastiveは「ペア間」（C(n_classes,2)個の説明）の重なりを見ており、直接の優劣比較ではない。合成データの構造上、全ペアの境界を分ける「核となる特徴量」が共通している可能性があり、明示的な共有構造がなくてもある程度自然に重なりが生まれたと考えられる。
 
 ## 実行したテスト・確認結果
 
-- `src/run_experiment.py`のstability計算部分を正規化版含めて更新し、フルグリッド（n_features=[8,14,20]×n_classes=[3,4,5]）で完走。`results/experiment_results.csv`に保存（正規化版の列を含む）。
-- ハード版・ソフト版・one-vs-restの正規化安定性をアドホックスクリプトで3セル（n_features×n_classes = (8,3),(14,4),(20,5)）比較し、ソフト版がハード版の不安定性を解消することを確認（`results/`には未保存）。
+- `src/run_contrastive_experiment.py`をフルグリッド（n_features=[8,14,20]×n_classes=[3,4,5]×K∈{0.3,0.6}×n_features）で完走。`results/contrastive_results.csv`に保存。
 
 ## 未完了・既知の問題・未検証事項
 
-- ソフト版の正規化安定性検証は3セルのみ。フルグリッドでの再現性は未確認。
-- ソフト版の正規化安定性検証を`src/investigate_reversal.py`または新規スクリプトとして恒久化していない（アドホック実行のみ）。
-- これで**stabilityは条件付き（ソフト版なら互角、ハード版なら劣る）**という扱いに変わったため、修論全体の「4指標の統合」（前回の次のアクション）の内容を作り直す必要がある。
+- fidelityの差が出なかったのは「符号一致率」という指標が粗すぎる可能性がある。log比と生の差分の違いは、確率が0/1に近い極端な領域でより顕著に出るかもしれない（未検証）。
+- feature overlapの「クラス間 vs ペア間」という比較単位の違いを解消した、より公平な指標が必要（例：one-vs-rest/Fisherも「予測クラス vs 各対抗クラス」のペア単位で揃えて再比較する）。
+- Contrastiveのfeature overlapが理論的懸念（共有構造なし）ほど悪化しなかった理由は、合成データの構造への依存を疑っており、実データまたはより特徴量間の相関構造を変えたデータでの再検証が必要。
 
 ## 次に行うこと
 
-1. ソフト版の正規化安定性をフルグリッドで検証し、`src/run_experiment.py`または専用スクリプトに正式に組み込む。
-2. 4指標（stability, feature overlap, sum-to-one, fidelity）の結果を、今回の訂正を反映して統合し直す。現時点でハード版Fisherを積極的に推せる指標はほぼ無く、ソフト版がstability・fidelityでは互角、feature overlapではむしろ悪化するという、より地味で正直な立ち位置になっている。この現実を修論にどう位置づけるか、方針を検討する必要がある。
-3. 実データセットでの再現性確認。
+1. feature overlapの比較単位をクラス間・ペア間で統一し、Contrastive vs Fisher vs one-vs-restを公平に再比較する。
+2. 確率が極端な領域（0または1に近い）でのContrastiveの優位性を、専用の検証で確認する。
+3. ソフト版Fisherの正規化安定性をフルグリッドで検証する（前回からの持ち越し）。
+4. 4手法（one-vs-rest, Fisher(hard/soft), Contrastive）×3指標の結果を統合し、修論の主張として文章化する。
+5. 実データセットでの再現性確認。
