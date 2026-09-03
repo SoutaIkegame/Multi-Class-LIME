@@ -15,6 +15,7 @@
 - one-vs-rest LIME vs Fisher LIMEのconsistency・stability比較実験を実装・完走済み（グリッド実験2回、診断実験1回）。
 - **重要な理論修正あり**：当初の「推移律が崩れる」という問題提起は数学的に成立しないことが判明（任意の実数の大小比較は常に推移的なため）。
 - **consistencyの正しい定義はLIMEtree（Sokol & Flach 2025）の一次資料に基づく**：「モデル同士が共通構造を共有しない・異なる特徴量部分集合を使う」ことが矛盾した説明の原因（p.5）。sum-to-oneや推移律そのものではない。
+- **査読済み文献を中心に関連研究を再整理済み**（`docs/RELATED_WORK.md`）。pairwise条件付き確率、log-ratio、多クラス同時サロゲート、共有特徴選択、LDAの局所説明への導入にはそれぞれ先行研究がある。一方、「LIMEの局所摂動上でユーザー指定の任意クラス対の$\log(p_c/p_d)$を疎な線形モデルとして直接学習し、各代替手法と統一条件で比較する」という組合せに完全一致する査読済み手法は、2026-09-03時点の調査では未確認。
 - 実測で確認済みの結論（詳細は`docs/RECENT_WORK.md`参照）：
   - **【重要な訂正あり】stability（ペア方向ベクトルの分散）の当初の結論（Fisherが15〜100倍安定）は測定上の誤りだった**。Fisherの方向ベクトル$v=S_W^{-1}(\mu_X-\mu_Y)$はone-vs-restの回帰係数差より常に6〜15倍小さい大きさで、これは尺度の違い（Fisherの出力に自然な単位がないこと）によるもの。分散を尺度不変な形（単位ベクトルに正規化してから比較）で測り直すと、**Fisher（ハード版）はone-vs-restより2〜4倍不安定**という逆の結果になった。ハードラベル版でのこの不安定性は、局所近傍でのクラスごとのサンプル飢餓が原因と考えられ、**ソフトラベル版に切り替えるとone-vs-restとほぼ同等の安定性に回復する**ことを確認済み（詳細な検証は3セルのみ、フルグリッドでの再現は未実施）。
   - feature overlap・fidelity実験は、この尺度の問題を抱えていないことを確認済み（feature overlapは順位のみ使うため尺度不変、fidelityは両手法とも適切な単位の確率値に変換してから比較しているため）。以下の結論はそのまま有効。
@@ -49,6 +50,8 @@
 - `src/run_fidelity_experiment.py`: 次元数×クラス数グリッドでone-vs-rest / Fisher(hard) / Fisher(soft)の忠実性を比較する実験ドライバ。結果は`results/fidelity_results.csv`。
 - `src/run_contrastive_experiment.py`: one-vs-rest / Fisher(hard) / Contrastiveの3手法を、fidelity・stability（正規化）・feature overlapの3指標で同時比較するグリッド実験。結果は`results/contrastive_results.csv`。
 - `src/run_extreme_regime_experiment.py`: 同じ局所近傍を「競合2クラスの確率が両方とも極端（一方が閾値未満）」と「穏やか」に分割し、fidelityを領域別に比較するグリッド実験。結果は`results/extreme_regime_results.csv`。
+- `docs/OVO_LIME_METHODS.md`: OVR、pairwise probability、pairwise log-odds、OVO Logistic-LIME、Contrastive LIME、OVO Fisher-LIME、共同学習の定式化と評価案。
+- `docs/RELATED_WORK.md`: 多クラスLIMEと対比的局所説明に関する査読済み文献、各研究との重なり、安全な新規性の位置づけ、比較実験への示唆。
 - `.venv/`: Python仮想環境（`.gitignore`で除外、コミット対象外）。
 
 ## セットアップと実行方法

@@ -989,14 +989,14 @@ $$
 
 ## 15. 実装状況（2026-09-03時点）
 
-現在のローカル`main`はコミット`0e849ae`で、`origin/main`より3コミット遅れている。
+現在のローカル`main`はコミット`9e1122c`で、`origin/main`と同期している。
 
 | 手法 | 実装状況 |
 |---|---|
 | OVR-LIME | ローカル`main`に実装済み |
 | Fisher hard / soft | ローカル`main`に実装済み。ただし現在のsoft Fisherは多クラス重心方式であり、本ページの「ペアごとのsoft Fisher + 1次元確率校正」と完全には同一でない |
-| Contrastive LIME | `origin/main`のコミット`322c4e0`以降に実装済み。ローカル`main`には未反映 |
-| Group Lasso共同log-ratio | リモート作業ブランチのコミット`ca6558d`で実装、`a17e969`で確率復元の符号バグを修正。ローカル`main`には未反映 |
+| Contrastive LIME | 現在のローカル`main`に`fit_contrastive`と`fit_contrastive_lasso`を実装済み |
+| Group Lasso共同log-ratio | 過去のリモート作業ブランチでは実装・修正履歴があるが、現在のローカル`main`の`src/`には未反映 |
 | OVO Logistic-LIME | 未実装 |
 | OVO Fisher-LIME | 未実装 |
 
@@ -1056,7 +1056,8 @@ Fisherを含める場合は、次の問いを追加する。
 
 ## 参考資料
 
-- Ribeiro, Singh, and Guestrin, *Why Should I Trust You? Explaining the Predictions of Any Classifier*, KDD 2016: <https://arxiv.org/abs/1602.04938>
+- 査読済み文献を中心とした詳しい関連研究整理: [`docs/RELATED_WORK.md`](RELATED_WORK.md)
+- Ribeiro, Singh, and Guestrin, *Why Should I Trust You? Explaining the Predictions of Any Classifier*, KDD 2016: <https://doi.org/10.1145/2939672.2939778>
 - LIME公式実装: <https://github.com/marcotcr/lime>
-- Sokol and Flach, *LIMEtree: Consistent and Faithful Multi-class Explanations*: <https://arxiv.org/abs/2005.01427>
+- Sokol and Flach, *LIMEtree: Consistent and Faithful Surrogate Explanations of Multiple Classes*, Electronics 2025: <https://doi.org/10.3390/electronics14050929>
 - scikit-learn, Linear and Quadratic Discriminant Analysis: <https://scikit-learn.org/stable/modules/lda_qda.html>
