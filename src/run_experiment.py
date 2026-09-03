@@ -49,6 +49,7 @@ from metrics import (  # noqa: E402
     total_variance_normalized,
     mean_norm,
 )
+from stats_utils import compare_methods  # noqa: E402
 
 # n_features grid chosen to always leave room for redundant (correlated)
 # features on top of the informative core: n_informative = max(3, n_classes),
@@ -60,6 +61,12 @@ N_INSTANCES = 8
 N_STABILITY_REPEATS = 15
 N_PERTURB_SAMPLES = 300
 SEED = 0
+# Each grid cell is re-run over this many INDEPENDENT dataset draws
+# (fresh make_classification + fresh RandomForest fit each time) so that
+# grid-cell means can be reported with a real confidence interval and
+# method-vs-method differences can be tested for significance instead of
+# eyeballed off a single dataset draw. See src/stats_utils.py docstring.
+N_DATASET_SEEDS = 20
 
 
 def pick_contested_instances(clf, X_pool, n_instances):
@@ -189,11 +196,22 @@ def main():
     rng = np.random.default_rng(SEED)
     all_rows = []
     t0 = time.time()
+    n_cells = len(N_FEATURES_GRID) * len(N_CLASSES_GRID)
+    cell_i = 0
     for n_features in N_FEATURES_GRID:
         for n_classes in N_CLASSES_GRID:
-            print(f"[{time.time()-t0:6.1f}s] running n_features={n_features}, n_classes={n_classes} ...")
-            rows = run_one_cell(n_features, n_classes, rng)
-            all_rows.extend(rows)
+            cell_i += 1
+            print(f"[{time.time()-t0:6.1f}s] cell {cell_i}/{n_cells}: n_features={n_features}, "
+                  f"n_classes={n_classes}, {N_DATASET_SEEDS} dataset seeds ...")
+            for seed in range(N_DATASET_SEEDS):
+                # run_one_cell draws a fresh make_classification dataset (and
+                # fits a fresh RandomForest) each call, consuming from rng --
+                # so each seed here is a genuinely independent replicate, not
+                # just a different perturbation draw on the same dataset.
+                rows = run_one_cell(n_features, n_classes, rng)
+                for row in rows:
+                    row["seed"] = seed
+                all_rows.extend(rows)
 
     df = pd.DataFrame(all_rows)
     out_dir = Path(__file__).parent.parent / "results"
@@ -205,11 +223,30 @@ def main():
 
     pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", 20)
-    print("\n=== per-(n_features, n_classes, K) mean over instances/repeats ===")
+    print("\n=== per-(n_features, n_classes, K) mean over instances/repeats/seeds (naive, no CI) ===")
     print(summary)
 
     print("\n=== overall mean across all grid cells ===")
     print(df.mean(numeric_only=True))
+
+    # --- statistically rigorous comparison: seed-level means, bootstrap
+    # CIs, paired Wilcoxon tests, Holm-Bonferroni correction across cells ---
+    topk_pairs = [
+        ("feature_overlap", "ovr_feature_overlap", "fisher_feature_overlap"),
+    ]
+    stats_topk = compare_methods(df, ["n_features", "n_classes", "K"], topk_pairs)
+
+    nontopk_pairs = [
+        ("stability_normalized", "ovr_pairdiff_variance_normalized", "fisher_pairdiff_variance_normalized"),
+    ]
+    stats_nontopk = compare_methods(df, ["n_features", "n_classes"], nontopk_pairs)
+
+    stats_all = pd.concat([stats_topk, stats_nontopk], ignore_index=True)
+    stats_all.to_csv(out_dir / "experiment_stats.csv", index=False)
+
+    print(f"\n=== paired tests across {N_DATASET_SEEDS} independent dataset seeds "
+          "(Holm-Bonferroni corrected across grid cells within each metric) ===")
+    print(stats_all.to_string(index=False))
 
 
 if __name__ == "__main__":

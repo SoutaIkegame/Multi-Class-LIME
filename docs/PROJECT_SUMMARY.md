@@ -16,15 +16,16 @@
 - **重要な理論修正あり**：当初の「推移律が崩れる」という問題提起は数学的に成立しないことが判明（任意の実数の大小比較は常に推移的なため）。
 - **consistencyの正しい定義はLIMEtree（Sokol & Flach 2025）の一次資料に基づく**：「モデル同士が共通構造を共有しない・異なる特徴量部分集合を使う」ことが矛盾した説明の原因（p.5）。sum-to-oneや推移律そのものではない。
 - **査読済み文献を中心に関連研究を再整理済み**（`docs/RELATED_WORK.md`）。pairwise条件付き確率、log-ratio、多クラス同時サロゲート、共有特徴選択、LDAの局所説明への導入にはそれぞれ先行研究がある。一方、「LIMEの局所摂動上でユーザー指定の任意クラス対の$\log(p_c/p_d)$を疎な線形モデルとして直接学習し、各代替手法と統一条件で比較する」という組合せに完全一致する査読済み手法は、2026-09-03時点の調査では未確認。
+- **統計的厳密性の強化（2026-09-03）**：それまでの4本の実験ドライバは、各グリッドセルにつきデータセット・分類器の抽選が1回だけで、8インスタンスの平均を信頼区間・検定なしで報告していた（＝そのデータセットがたまたま非典型だった可能性を区別できなかった）。`src/stats_utils.py`を新設し、各グリッドセルを**独立したデータセット抽選20回（N_DATASET_SEEDS=20）**で反復し、seedごとにインスタンス平均を取ってから（擬似反復の回避）ブートストラップ信頼区間・対応ありWilcoxon符号順位検定・Holm-Bonferroni多重比較補正を適用する方式に、主要4実験（`run_experiment.py`, `run_contrastive_experiment.py`, `run_fidelity_experiment.py`, `run_extreme_regime_experiment.py`）を作り直した。以下の結論はこの統計的枠組みで再検証済み（詳細は`docs/RECENT_WORK.md`参照）。`src/investigate_reversal.py`（診断スクリプト）はこの反復方式にまだ移行しておらず、単一シードのままである点に注意。
 - 実測で確認済みの結論（詳細は`docs/RECENT_WORK.md`参照）：
-  - **【重要な訂正あり】stability（ペア方向ベクトルの分散）の当初の結論（Fisherが15〜100倍安定）は測定上の誤りだった**。Fisherの方向ベクトル$v=S_W^{-1}(\mu_X-\mu_Y)$はone-vs-restの回帰係数差より常に6〜15倍小さい大きさで、これは尺度の違い（Fisherの出力に自然な単位がないこと）によるもの。分散を尺度不変な形（単位ベクトルに正規化してから比較）で測り直すと、**Fisher（ハード版）はone-vs-restより2〜4倍不安定**という逆の結果になった。ハードラベル版でのこの不安定性は、局所近傍でのクラスごとのサンプル飢餓が原因と考えられ、**ソフトラベル版に切り替えるとone-vs-restとほぼ同等の安定性に回復する**ことを確認済み（詳細な検証は3セルのみ、フルグリッドでの再現は未実施）。
-  - feature overlap・fidelity実験は、この尺度の問題を抱えていないことを確認済み（feature overlapは順位のみ使うため尺度不変、fidelityは両手法とも適切な単位の確率値に変換してから比較しているため）。以下の結論はそのまま有効。
-  - **feature overlap（LIMEtreeの主張の直接的な操作化）はFisherが優位になる条件と、逆転する条件が両方ある**。真のLasso選択＋相関の強い特徴量がある設定では概ねFisher優位だが、クラス数が多いとFisherのハードラベル設計がクラスを局所近傍から丸ごと欠落させる問題があり、これが逆転の主因（冗長特徴量の予算不足ではない）。
-  - ソフトラベル版Fisher（`fit_fisher_soft`）はこの欠落は解消するが、feature overlap自体は多くの条件でむしろ悪化する（クラス間の分離が弱まるため）。単純な優劣ではなくトレードオフとして扱うべき。
-  - **fidelity（忠実性）は測り方で結論が変わる**。Fisherを標準の多クラス確率分類器として評価すると one-vs-rest に大きく劣る（Hellinger損失で2〜6倍、argmax一致率でも76.5%対55%前後）。しかし提案アルゴリズムが実際に使う量（黒箱が決めた予測クラス$c^*$と競合クラス$c'$のペア比較の符号）で測り直すと、one-vs-rest 81.3% vs Fisher 80.4%とほぼ互角。**Fisherの忠実性の弱さは「絶対確率値としての解釈」に限定され、「2クラス比較の方向」としての忠実性はone-vs-restと同等**、という切り分けが重要。
-  - **現時点の全体像**：当初考えていたほど明確な優位性はハード版Fisherにはない（stability・feature overlap(高クラス数)・fidelity(絶対値)のいずれも劣る）。ソフト版はstability・fidelityでone-vs-restとほぼ互角まで回復するが、feature overlapは悪化しやすい。「Fisherが勝つ」という単純な主張ではなく、**指標ごとに条件付きで一長一短がある**、という正直な立ち位置。
-  - **4手法目「Contrastive LIME」を追加検証**：one-vs-restを2本フィットして引くのではなく、$\log(p_A/p_B)$を直接回帰する方式（ユーザー提案）。理論的には忠実性で明確に勝つと予想したが、実測ではone-vs-restとほぼ完全な同点だった（同一設計のRidge回帰なら「引き算」と「直接回帰」が線形性により数学的に一致するため）。stabilityはone-vs-restと同格（Fisherより良い）。feature overlapはFisherとone-vs-restの中間だが、比較単位（クラス間 vs ペア間）が異なるため直接の優劣比較ではない。
-  - **極端確率領域での検証**：競合する2クラスの一方の確率が0に近い局所領域に絞ってfidelityを測ると、Contrastiveのone-vs-restに対する優位性は「弱いが本物」（平均+0.8ポイント、穏やかな領域では約0ポイント）。効果量は小さく、決定的な差別化ポイントとまでは言えない。一方、**Fisher(hard)はこの極端領域で一貫して3〜4ポイント劣化**しており、これはfeature overlap・stabilityでも見られた「ハードラベルによるサンプル飢餓」が3つ目の独立した文脈で再確認された形になる。
+  - **stability（正規化ペア方向ベクトルの分散）**：**Fisher（ハード版）はone-vs-restより不安定**という結果が、20独立シード全てで一貫して再現された（全9グリッドセルでp≈0.000002、Holm補正後も有意）。ソフトラベル版のstabilityは今回のフルグリッド再検証の対象外のまま（依然としてアドホックな3セル検証のみ、フルグリッドでの再現は未実施）。
+  - feature overlap・fidelity実験は尺度の問題を抱えていない（feature overlapは順位のみ使うため尺度不変、fidelityは両手法とも適切な単位の確率値に変換してから比較しているため）。
+  - **【訂正】feature overlap（LIMEtreeの主張の直接的な操作化）**：以前は「クラス数が多いと逆転する（OVRが優位になる）」と記載していたが、統計的に厳密な再検証では、Fisherは検証した全18グリッドセル×K（n_classes=3〜5の範囲）で数値上は一貫してOVRより高い（優位）。ただし有意性はクラス数が増えるほど失われ、n_classes=5の多くのセルで非有意になる。**OVRが統計的に有意に上回るケースは1つも観測されなかった**——正確には「逆転」ではなく「優位性の消失（クラス数増加につれ差が検出できなくなる）」。より高いクラス数（6〜7）での真の逆転を主張する`investigate_reversal.py`の診断結果は、異なる設計（n_informative固定）かつ単一シードのままなので、この訂正と直接矛盾はしないが再検証が必要。
+  - ソフトラベル版Fisher（`fit_fisher_soft`）はクラス欠落は解消するが、feature overlap自体は多くの条件でむしろ悪化する（クラス間の分離が弱まるため）。単純な優劣ではなくトレードオフとして扱うべき。
+  - **fidelity（忠実性）は測り方で結論が変わる**。Fisherを標準の多クラス確率分類器として評価すると one-vs-rest に大きく劣る（Hellinger損失、全9セル×hard/soft版で統計的に有意にOVRが優位、p≈0.000002）。しかし提案アルゴリズムが実際に使う量（黒箱が決めた予測クラス$c^*$と競合クラス$c'$のペア比較の符号一致率）で測り直すと、OVRはFisher(hard)より9セル中4セルで有意に優位（n_classes・n_featuresが大きいセルに集中）——**「ほぼ互角」ではなく「小さいグリッドでは互角、大きいグリッドではOVRがわずかに有意に優位」**という、以前より精緻化された結論。**Fisherの忠実性の弱さは「絶対確率値としての解釈」でより顕著**、という切り分けは維持。
+  - **現時点の全体像**：ハード版Fisherに明確な優位性はない（stability・fidelity(絶対値・ペア符号どちらも)のいずれも統計的に有意に劣る。feature overlapのみ数値上は優位を保つが有意性は不安定）。ソフト版はfidelity(絶対値)でハード版より統計的に有意に優れる（全9セル）が、stabilityはフルグリッド未検証のまま。「Fisherが勝つ」という単純な主張ではなく、**指標ごとに条件付きで一長一短がある**、という正直な立ち位置は変わらない。
+  - **4手法目「Contrastive LIME」**：one-vs-restを2本フィットして引くのではなく、$\log(p_A/p_B)$を直接回帰する方式。fidelity（ペア符号一致率）はOVRとほぼ完全な同点（9セル中8セルで非有意、差は0.002〜0.004）——統計的に確認済み。stabilityはOVRとほぼ同格（3/9セルで有意にContrastiveがわずかに安定、それ以外は非有意）、Fisherより全9セルで有意に安定。feature overlapはOVRとほぼ非有意差（3/18で有意、小さい）、Fisherとは低クラス数・高次元セルで有意差あり（比較単位がクラス間 vs ペア間で異なる点は未解消）。
+  - **極端確率領域での検証**：競合する2クラスの一方の確率が0に近い局所領域でfidelityを測ると、Contrastiveのone-vs-restに対する優位性は全9セル中6セルで統計的に有意（クラス数・次元数が大きいセルに集中、n_classes=3では非有意）。**新しい発見**：この優位性は無償ではなく、穏やかな領域ではContrastiveがOVRよりわずかに、しかし統計的に有意に劣る場合がある（9セル中3セルで有意、差は-0.002〜-0.008）——極端領域での優位性と引き換えに穏やかな領域で小さなコストを払っている可能性。一方、**Fisher(hard)はこの極端領域で全9セルにおいて統計的に有意に劣化**（p<0.003）しており、feature overlap・stabilityでも見られた「ハードラベルによるサンプル飢餓」が3つ目の独立した文脈・厳密な検定で再確認された。
 
 ## 主要な構成
 
@@ -44,12 +45,13 @@
   - `total_variance_normalized`: 尺度不変のstability指標（単位ベクトルに正規化してから分散を取る）。**手法間の比較には必ずこちらを使う**。
   - `mean_norm`: ベクトルの平均大きさ（尺度差を確認するための参考情報）。
   - `transitivity_violation_rate`: **理論的に常に0になるため実験では未使用**。docstringに理由を明記した上でコードのみ残置。
-- `src/run_experiment.py`: 次元数×クラス数×Kのグリッドで両手法を比較する実験ドライバ。完走済み、結果は`results/experiment_results.csv`等に出力。
-- `src/investigate_reversal.py`: feature overlapでFisherの優位性が逆転する条件（高クラス数）の原因を切り分ける診断スクリプト。ハード版・ソフト版Fisherを同時比較する。
+- `src/stats_utils.py`: 実験ドライバ共通の統計ヘルパー。`bootstrap_ci`（パーセンタイル・ブートストラップ信頼区間）、`paired_wilcoxon`（対応ありWilcoxon符号順位検定＋matched-pairs rank-biserial効果量）、`holm_bonferroni`（多重比較補正）、`compare_methods`（グリッドセルごとにseedレベル平均を独立サンプルとして扱い、これらを組み合わせて統計比較表を作る高水準関数）。擬似反復（同一データセット内の複数インスタンスを独立サンプル扱いすること）を避ける設計上の理由はモジュールのdocstringに詳しく記載。
+- `src/run_experiment.py`: 次元数×クラス数×Kのグリッドで one-vs-rest / Fisher(hard) を比較する実験ドライバ。各グリッドセルにつき独立したデータセット抽選を`N_DATASET_SEEDS=20`回繰り返す。完走済み、生データは`results/experiment_results.csv`、統計比較は`results/experiment_stats.csv`に出力。
+- `src/investigate_reversal.py`: feature overlapでFisherの優位性が縮小・逆転する条件（高クラス数、n_classes=6〜7）の原因を切り分ける診断スクリプト。ハード版・ソフト版Fisherを同時比較する。**まだ`N_DATASET_SEEDS`方式の統計的厳密化の対象外**（単一シードのアドホック診断のまま）。
 - `src/fidelity.py`: 忠実性（fidelity）評価用の確率変換・損失関数。`onevsrest_predict_proba`（Ridge出力のクリップ＋正規化）、`fisher_predict_proba`（LDA確率モデルによる擬似確率、`LinearDiscriminantAnalysis.predict_proba`と同じ考え方）、`weighted_hellinger_loss`（SLISEMAP Eq.11と同じ二乗Hellinger距離）。
-- `src/run_fidelity_experiment.py`: 次元数×クラス数グリッドでone-vs-rest / Fisher(hard) / Fisher(soft)の忠実性を比較する実験ドライバ。結果は`results/fidelity_results.csv`。
-- `src/run_contrastive_experiment.py`: one-vs-rest / Fisher(hard) / Contrastiveの3手法を、fidelity・stability（正規化）・feature overlapの3指標で同時比較するグリッド実験。結果は`results/contrastive_results.csv`。
-- `src/run_extreme_regime_experiment.py`: 同じ局所近傍を「競合2クラスの確率が両方とも極端（一方が閾値未満）」と「穏やか」に分割し、fidelityを領域別に比較するグリッド実験。結果は`results/extreme_regime_results.csv`。
+- `src/run_fidelity_experiment.py`: 次元数×クラス数グリッドでone-vs-rest / Fisher(hard) / Fisher(soft)の忠実性（Hellinger損失）を比較する実験ドライバ。`N_DATASET_SEEDS=20`で反復。結果は`results/fidelity_results.csv`、統計比較は`results/fidelity_stats.csv`。
+- `src/run_contrastive_experiment.py`: one-vs-rest / Fisher(hard) / Contrastiveの3手法を、fidelity（ペア符号一致率）・stability（正規化）・feature overlapの3指標で同時比較するグリッド実験。`N_DATASET_SEEDS=20`で反復。結果は`results/contrastive_results.csv`、統計比較は`results/contrastive_stats.csv`。
+- `src/run_extreme_regime_experiment.py`: 同じ局所近傍を「競合2クラスの確率が両方とも極端（一方が閾値未満）」と「穏やか」に分割し、fidelityを領域別に比較するグリッド実験。`N_DATASET_SEEDS=20`で反復。結果は`results/extreme_regime_results.csv`、統計比較は`results/extreme_regime_stats.csv`。
 - `docs/OVO_LIME_METHODS.md`: OVR、pairwise probability、pairwise log-odds、OVO Logistic-LIME、Contrastive LIME、OVO Fisher-LIME、共同学習の定式化と評価案。
 - `docs/RELATED_WORK.md`: 多クラスLIMEと対比的局所説明に関する査読済み文献、各研究との重なり、安全な新規性の位置づけ、比較実験への示唆。
 - `.venv/`: Python仮想環境（`.gitignore`で除外、コミット対象外）。
@@ -93,7 +95,9 @@ python3 src/investigate_reversal.py   # 高クラス数での逆転を調べる�
 
 - consistencyの主張を、実測で裏付けられる正確な形（LIMEtreeの「共通構造の有無」の定義に基づく、条件付きの主張）に修論の記述を修正する。
 - ハード版・ソフト版Fisherのトレードオフを理論的に説明する（重心間距離・S_Bの直接比較など）。ハイブリッド案（局所サンプルが少ないクラスだけソフトにフォールバック）の検討。
-- ソフト版の正規化stabilityをフルグリッドで再検証し、恒久的なスクリプトとして組み込む（現状3セルのアドホック検証のみ）。
+- ソフト版の正規化stabilityを、今回整備した統計的枠組み（`N_DATASET_SEEDS`反復＋`stats_utils.py`）でフルグリッド再検証し、恒久的なスクリプトとして組み込む（現状3セルのアドホック検証のみ）。
+- `src/investigate_reversal.py`（n_classes=6〜7での「逆転」診断）を同じ統計的枠組みで再検証する。今回の`run_experiment.py`再検証（n_classes 3〜5では「逆転」ではなく「優位性の消失」）との整合性を確認する必要がある。
 - feature overlapの「クラス間 vs ペア間」という比較単位の不一致を解消し、Contrastive・Fisher・one-vs-restを公平に再比較する。
-- one-vs-rest, Fisher(hard/soft), Contrastiveの4手法×fidelity・stability・feature overlap・sum-to-one・極端領域fidelityの結果を統合し、修論の主張として文章化する。「Fisherが優れている」という単純な主張ではなく、条件付き・トレードオフとして誠実に書く必要がある。
+- one-vs-rest, Fisher(hard/soft), Contrastiveの4手法×fidelity・stability・feature overlap・sum-to-one・極端領域fidelityの、統計的に裏付けられた結果を統合し、修論の主張として文章化する。「Fisherが優れている」という単純な主張ではなく、条件付き・トレードオフとして誠実に書く必要がある。
+- インスタンス選択（マージン最小の8点のみ）が結果を偏らせていないか検証する（今回のスコープ外、ユーザーの優先度確認により統計的厳密性のみ対応）。
 - 実データセットでの再現性確認。

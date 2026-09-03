@@ -33,12 +33,17 @@ from fidelity import (  # noqa: E402
     weighted_hellinger_loss,
 )
 from run_experiment import pick_contested_instances  # noqa: E402
+from stats_utils import compare_methods  # noqa: E402
 
 N_FEATURES_GRID = [8, 14, 20]
 N_CLASSES_GRID = [3, 4, 5]
 N_INSTANCES = 8
 N_PERTURB_SAMPLES = 300
 SEED = 0
+# See src/stats_utils.py docstring: each grid cell is re-run over this many
+# independent dataset draws so method comparisons can be tested for
+# significance instead of read off a single draw.
+N_DATASET_SEEDS = 20
 
 
 def run_one_cell(n_features: int, n_classes: int, rng: np.random.Generator) -> list[dict]:
@@ -91,10 +96,18 @@ def main():
     rng = np.random.default_rng(SEED)
     all_rows = []
     t0 = time.time()
+    n_cells = len(N_FEATURES_GRID) * len(N_CLASSES_GRID)
+    cell_i = 0
     for n_features in N_FEATURES_GRID:
         for n_classes in N_CLASSES_GRID:
-            print(f"[{time.time()-t0:6.1f}s] running n_features={n_features}, n_classes={n_classes} ...")
-            all_rows.extend(run_one_cell(n_features, n_classes, rng))
+            cell_i += 1
+            print(f"[{time.time()-t0:6.1f}s] cell {cell_i}/{n_cells}: n_features={n_features}, "
+                  f"n_classes={n_classes}, {N_DATASET_SEEDS} dataset seeds ...")
+            for seed in range(N_DATASET_SEEDS):
+                rows = run_one_cell(n_features, n_classes, rng)
+                for row in rows:
+                    row["seed"] = seed
+                all_rows.extend(rows)
 
     df = pd.DataFrame(all_rows)
     out_dir = Path(__file__).parent.parent / "results"
@@ -103,10 +116,24 @@ def main():
 
     summary = df.groupby(["n_features", "n_classes"]).mean(numeric_only=True)
     pd.set_option("display.width", 160)
-    print("\n=== per-(n_features, n_classes) mean Hellinger loss (lower = better fidelity) ===")
+    print("\n=== per-(n_features, n_classes) mean Hellinger loss, lower=better (naive, no CI) ===")
     print(summary)
     print("\n=== overall mean ===")
     print(df.mean(numeric_only=True))
+
+    # --- statistically rigorous comparison ---
+    pairs = [
+        ("hellinger", "ovr_hellinger", "fisher_hard_hellinger"),
+        ("hellinger", "ovr_hellinger", "fisher_soft_hellinger"),
+        ("hellinger", "fisher_hard_hellinger", "fisher_soft_hellinger"),
+    ]
+    stats_df = compare_methods(df, ["n_features", "n_classes"], pairs)
+    stats_df.to_csv(out_dir / "fidelity_stats.csv", index=False)
+
+    print(f"\n=== paired tests across {N_DATASET_SEEDS} independent dataset seeds "
+          "(Holm-Bonferroni corrected across grid cells+pairs; mean_diff = a - b, "
+          "negative means a has LOWER (better) Hellinger loss) ===")
+    print(stats_df.to_string(index=False))
 
 
 if __name__ == "__main__":

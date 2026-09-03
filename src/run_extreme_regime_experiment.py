@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from perturbation import sample_perturbations  # noqa: E402
 from surrogates import fit_onevsrest, fit_fisher, fit_contrastive  # noqa: E402
 from run_experiment import pick_contested_instances  # noqa: E402
+from stats_utils import compare_methods  # noqa: E402
 
 N_FEATURES_GRID = [8, 14, 20]
 N_CLASSES_GRID = [3, 4, 5]
@@ -37,6 +38,12 @@ N_INSTANCES = 8
 N_PERTURB_SAMPLES = 300
 EXTREME_THRESHOLD = 0.15
 SEED = 0
+# See src/stats_utils.py docstring: each grid cell is re-run over this many
+# independent dataset draws so method comparisons can be tested for
+# significance instead of read off a single draw. run_one_cell() already
+# averages over the N_INSTANCES contested instances internally, so each
+# call below IS one seed-level replicate.
+N_DATASET_SEEDS = 20
 
 
 def weighted_sign_accuracy(pred_sign, true_sign, weights, mask):
@@ -116,10 +123,17 @@ def main():
     rng = np.random.default_rng(SEED)
     rows = []
     t0 = time.time()
+    n_cells = len(N_FEATURES_GRID) * len(N_CLASSES_GRID)
+    cell_i = 0
     for n_features in N_FEATURES_GRID:
         for n_classes in N_CLASSES_GRID:
-            print(f"[{time.time()-t0:6.1f}s] running n_features={n_features}, n_classes={n_classes} ...")
-            rows.append(run_one_cell(n_features, n_classes, rng))
+            cell_i += 1
+            print(f"[{time.time()-t0:6.1f}s] cell {cell_i}/{n_cells}: n_features={n_features}, "
+                  f"n_classes={n_classes}, {N_DATASET_SEEDS} dataset seeds ...")
+            for seed in range(N_DATASET_SEEDS):
+                row = run_one_cell(n_features, n_classes, rng)
+                row["seed"] = seed
+                rows.append(row)
 
     df = pd.DataFrame(rows)
     out_dir = Path(__file__).parent.parent / "results"
@@ -127,15 +141,25 @@ def main():
     df.to_csv(out_dir / "extreme_regime_results.csv", index=False)
 
     pd.set_option("display.width", 200)
-    print("\n=== per grid cell ===")
-    print(df)
+    summary = df.groupby(["n_features", "n_classes"]).mean(numeric_only=True)
+    print("\n=== per grid cell mean over seeds (naive, no CI) ===")
+    print(summary)
     print("\n=== overall mean ===")
     print(df.mean(numeric_only=True))
 
-    df["contrastive_minus_ovr_extreme"] = df["extreme_contrastive"] - df["extreme_ovr"]
-    df["contrastive_minus_ovr_moderate"] = df["moderate_contrastive"] - df["moderate_ovr"]
-    print("\n=== mean margin (contrastive - one-vs-rest) ===")
-    print(df[["contrastive_minus_ovr_extreme", "contrastive_minus_ovr_moderate"]].mean())
+    # --- statistically rigorous comparison ---
+    pairs = [
+        ("extreme_fidelity", "extreme_contrastive", "extreme_ovr"),
+        ("extreme_fidelity", "extreme_fisher", "extreme_ovr"),
+        ("moderate_fidelity", "moderate_contrastive", "moderate_ovr"),
+        ("moderate_fidelity", "moderate_fisher", "moderate_ovr"),
+    ]
+    stats_df = compare_methods(df, ["n_features", "n_classes"], pairs)
+    stats_df.to_csv(out_dir / "extreme_regime_stats.csv", index=False)
+
+    print(f"\n=== paired tests across {N_DATASET_SEEDS} independent dataset seeds "
+          "(Holm-Bonferroni corrected across grid cells+pairs) ===")
+    print(stats_df.to_string(index=False))
 
 
 if __name__ == "__main__":

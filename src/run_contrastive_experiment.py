@@ -48,6 +48,7 @@ from surrogates import (  # noqa: E402
 )
 from metrics import total_variance_normalized, mean_norm, mean_pairwise_feature_overlap  # noqa: E402
 from run_experiment import pick_contested_instances  # noqa: E402
+from stats_utils import compare_methods  # noqa: E402
 
 N_FEATURES_GRID = [8, 14, 20]
 N_CLASSES_GRID = [3, 4, 5]
@@ -56,6 +57,10 @@ N_INSTANCES = 8
 N_STABILITY_REPEATS = 15
 N_PERTURB_SAMPLES = 300
 SEED = 0
+# See src/stats_utils.py docstring: each grid cell is re-run over this many
+# independent dataset draws so method comparisons can be tested for
+# significance instead of read off a single draw.
+N_DATASET_SEEDS = 20
 
 
 def pairwise_sign_accuracy(pred_scores: np.ndarray, proba: np.ndarray, c1: int, c2: int,
@@ -170,10 +175,18 @@ def main():
     rng = np.random.default_rng(SEED)
     all_rows = []
     t0 = time.time()
+    n_cells = len(N_FEATURES_GRID) * len(N_CLASSES_GRID)
+    cell_i = 0
     for n_features in N_FEATURES_GRID:
         for n_classes in N_CLASSES_GRID:
-            print(f"[{time.time()-t0:6.1f}s] running n_features={n_features}, n_classes={n_classes} ...")
-            all_rows.extend(run_one_cell(n_features, n_classes, rng))
+            cell_i += 1
+            print(f"[{time.time()-t0:6.1f}s] cell {cell_i}/{n_cells}: n_features={n_features}, "
+                  f"n_classes={n_classes}, {N_DATASET_SEEDS} dataset seeds ...")
+            for seed in range(N_DATASET_SEEDS):
+                rows = run_one_cell(n_features, n_classes, rng)
+                for row in rows:
+                    row["seed"] = seed
+                all_rows.extend(rows)
 
     df = pd.DataFrame(all_rows)
     out_dir = Path(__file__).parent.parent / "results"
@@ -183,10 +196,35 @@ def main():
     pd.set_option("display.width", 220)
     pd.set_option("display.max_columns", 20)
     summary = df.groupby(["n_features", "n_classes", "K"]).mean(numeric_only=True)
-    print("\n=== per-(n_features, n_classes, K) mean ===")
+    print("\n=== per-(n_features, n_classes, K) mean (naive, no CI) ===")
     print(summary)
     print("\n=== overall mean ===")
     print(df.mean(numeric_only=True))
+
+    # --- statistically rigorous comparison ---
+    nontopk_pairs = [
+        ("fidelity", "ovr_fidelity", "fisher_fidelity"),
+        ("fidelity", "ovr_fidelity", "contrastive_fidelity"),
+        ("fidelity", "fisher_fidelity", "contrastive_fidelity"),
+        ("stability_normalized", "ovr_stability_normalized", "fisher_stability_normalized"),
+        ("stability_normalized", "ovr_stability_normalized", "contrastive_stability_normalized"),
+        ("stability_normalized", "fisher_stability_normalized", "contrastive_stability_normalized"),
+    ]
+    stats_nontopk = compare_methods(df, ["n_features", "n_classes"], nontopk_pairs)
+
+    topk_pairs = [
+        ("feature_overlap", "ovr_feature_overlap", "fisher_feature_overlap"),
+        ("feature_overlap", "ovr_feature_overlap", "contrastive_feature_overlap"),
+        ("feature_overlap", "fisher_feature_overlap", "contrastive_feature_overlap"),
+    ]
+    stats_topk = compare_methods(df, ["n_features", "n_classes", "K"], topk_pairs)
+
+    stats_all = pd.concat([stats_nontopk, stats_topk], ignore_index=True)
+    stats_all.to_csv(out_dir / "contrastive_stats.csv", index=False)
+
+    print(f"\n=== paired tests across {N_DATASET_SEEDS} independent dataset seeds "
+          "(Holm-Bonferroni corrected across grid cells within each metric+pair) ===")
+    print(stats_all.to_string(index=False))
 
 
 if __name__ == "__main__":
