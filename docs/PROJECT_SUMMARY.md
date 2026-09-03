@@ -26,6 +26,7 @@
   - **現時点の全体像**：ハード版Fisherに明確な優位性はない（stability・fidelity(絶対値・ペア符号どちらも)のいずれも統計的に有意に劣る。feature overlapのみ数値上は優位を保つが有意性は不安定）。ソフト版はfidelity(絶対値)でハード版より統計的に有意に優れる（全9セル）が、stabilityはフルグリッド未検証のまま。「Fisherが勝つ」という単純な主張ではなく、**指標ごとに条件付きで一長一短がある**、という正直な立ち位置は変わらない。
   - **4手法目「Contrastive LIME」**：one-vs-restを2本フィットして引くのではなく、$\log(p_A/p_B)$を直接回帰する方式。fidelity（ペア符号一致率）はOVRとほぼ完全な同点（9セル中8セルで非有意、差は0.002〜0.004）——統計的に確認済み。stabilityはOVRとほぼ同格（3/9セルで有意にContrastiveがわずかに安定、それ以外は非有意）、Fisherより全9セルで有意に安定。feature overlapはOVRとほぼ非有意差（3/18で有意、小さい）、Fisherとは低クラス数・高次元セルで有意差あり（比較単位がクラス間 vs ペア間で異なる点は未解消）。
   - **極端確率領域での検証**：競合する2クラスの一方の確率が0に近い局所領域でfidelityを測ると、Contrastiveのone-vs-restに対する優位性は全9セル中6セルで統計的に有意（クラス数・次元数が大きいセルに集中、n_classes=3では非有意）。**新しい発見**：この優位性は無償ではなく、穏やかな領域ではContrastiveがOVRよりわずかに、しかし統計的に有意に劣る場合がある（9セル中3セルで有意、差は-0.002〜-0.008）——極端領域での優位性と引き換えに穏やかな領域で小さなコストを払っている可能性。一方、**Fisher(hard)はこの極端領域で全9セルにおいて統計的に有意に劣化**（p<0.003）しており、feature overlap・stabilityでも見られた「ハードラベルによるサンプル飢餓」が3つ目の独立した文脈・厳密な検定で再確認された。
+  - **グラウンドトゥルース検証（Rahnama et al. 2024型、2026-09-03追加）**：黒箱をRandomForestから多項ロジスティック回帰に差し替え（＝真の対数オッズ係数$\theta_{c^*}-\theta_{c'}$が既知になる）、各手法の推定係数と真の係数のSpearman順位相関を測定。これは今までの「fidelity（局所再現性）」とは質的に異なる軸で、「正しい特徴に重みを置けているか」を直接検証する。**結果はContrastiveの最も明確な勝ちどころになった**：全グリッド平均でContrastive ρ=0.999、Fisher(soft) ρ=0.983、OVR ρ=0.976、Fisher(hard) ρ=0.953という順位が、ほぼ全ペア・全9セルで統計的に確定した（Contrastive vs 他3手法：全9セルで有意にContrastiveが優位、p≦0.0003）。理論的にも整合する：Contrastiveは対数オッズを直接回帰するため、黒箱が対数オッズについて線形（多項ロジスティック回帰）である限り真の係数をほぼ完璧に復元できる。OVRは生の確率（softmaxで非線形）を回帰するため一致度が下がる。Fisher(hard)は最下位で、これまでの実験（stability・極端領域fidelity）で見えていた「ハードラベルのサンプル飢餓」問題が別角度から再確認された。
 
 ## 主要な構成
 
@@ -52,6 +53,7 @@
 - `src/run_fidelity_experiment.py`: 次元数×クラス数グリッドでone-vs-rest / Fisher(hard) / Fisher(soft)の忠実性（Hellinger損失）を比較する実験ドライバ。`N_DATASET_SEEDS=20`で反復。結果は`results/fidelity_results.csv`、統計比較は`results/fidelity_stats.csv`。
 - `src/run_contrastive_experiment.py`: one-vs-rest / Fisher(hard) / Contrastiveの3手法を、fidelity（ペア符号一致率）・stability（正規化）・feature overlapの3指標で同時比較するグリッド実験。`N_DATASET_SEEDS=20`で反復。結果は`results/contrastive_results.csv`、統計比較は`results/contrastive_stats.csv`。
 - `src/run_extreme_regime_experiment.py`: 同じ局所近傍を「競合2クラスの確率が両方とも極端（一方が閾値未満）」と「穏やか」に分割し、fidelityを領域別に比較するグリッド実験。`N_DATASET_SEEDS=20`で反復。結果は`results/extreme_regime_results.csv`、統計比較は`results/extreme_regime_stats.csv`。
+- `src/run_groundtruth_experiment.py`: Rahnama et al. (2024)型のグラウンドトゥルース検証。黒箱を`LogisticRegression(multinomial)`に差し替え、真の対数オッズ係数$\theta_{c^*}-\theta_{c'}$と各手法（OVR / Fisher hard / Fisher soft / Contrastive）の推定係数のSpearman順位相関（`metrics.pairwise_coef_spearman`）を測る。`N_DATASET_SEEDS=20`で反復。結果は`results/groundtruth_results.csv`、統計比較は`results/groundtruth_stats.csv`。
 - `docs/OVO_LIME_METHODS.md`: OVR、pairwise probability、pairwise log-odds、OVO Logistic-LIME、Contrastive LIME、OVO Fisher-LIME、共同学習の定式化と評価案。
 - `docs/RELATED_WORK.md`: 多クラスLIMEと対比的局所説明に関する査読済み文献、各研究との重なり、安全な新規性の位置づけ、比較実験への示唆。
 - `.venv/`: Python仮想環境（`.gitignore`で除外、コミット対象外）。
@@ -98,6 +100,6 @@ python3 src/investigate_reversal.py   # 高クラス数での逆転を調べる�
 - ソフト版の正規化stabilityを、今回整備した統計的枠組み（`N_DATASET_SEEDS`反復＋`stats_utils.py`）でフルグリッド再検証し、恒久的なスクリプトとして組み込む（現状3セルのアドホック検証のみ）。
 - `src/investigate_reversal.py`（n_classes=6〜7での「逆転」診断）を同じ統計的枠組みで再検証する。今回の`run_experiment.py`再検証（n_classes 3〜5では「逆転」ではなく「優位性の消失」）との整合性を確認する必要がある。
 - feature overlapの「クラス間 vs ペア間」という比較単位の不一致を解消し、Contrastive・Fisher・one-vs-restを公平に再比較する。
-- one-vs-rest, Fisher(hard/soft), Contrastiveの4手法×fidelity・stability・feature overlap・sum-to-one・極端領域fidelityの、統計的に裏付けられた結果を統合し、修論の主張として文章化する。「Fisherが優れている」という単純な主張ではなく、条件付き・トレードオフとして誠実に書く必要がある。
+- one-vs-rest, Fisher(hard/soft), Contrastiveの4手法×fidelity・stability・feature overlap・sum-to-one・極端領域fidelity・グラウンドトゥルース復元の、統計的に裏付けられた結果を統合し、修論の主張として文章化する。「Fisherが優れている」という単純な主張ではなく、条件付き・トレードオフとして誠実に書く必要がある。グラウンドトゥルース検証はContrastiveにとって最も明確に勝てる指標なので、修論の主張の中心に据えることを検討する。
 - インスタンス選択（マージン最小の8点のみ）が結果を偏らせていないか検証する（今回のスコープ外、ユーザーの優先度確認により統計的厳密性のみ対応）。
 - 実データセットでの再現性確認。

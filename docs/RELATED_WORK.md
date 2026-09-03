@@ -200,6 +200,8 @@ Rahnama et al.は、40個の表形式データセットで、LIME、SHAP、Local
 - 摂動によるDeletion/Preservationだけでは、out-of-distribution入力が生じ、説明の正しさを直接測ったことにならない場合がある。
 - 合成データや透明モデルによるground-truth係数評価を併用すべきである。
 
+**2026-09-03に実装・実行済み**（`src/run_groundtruth_experiment.py`）：黒箱を多項ロジスティック回帰に差し替え、各手法（OVR / Fisher hard / Fisher soft / Contrastive）の推定pairwise係数と真の $\theta_{c^*}-\theta_{c'}$ のSpearman順位相関を測定した。結果はContrastiveが全手法・全グリッドセルで統計的に有意に最も真の係数を復元できることを示した（詳細は`docs/RECENT_WORK.md`、生の大きさではなく順位相関を使う理由もRahnama et al.の方針に準拠）。Rahnama et al.自体はLIME・SHAP・Local Permutation Importanceを線形回帰・ロジスティック回帰・Naive Bayesで比較したものであり、本研究の「多クラスLIME拡張4手法をpairwise log-odds線形性のもとで比較する」という設定はRahnama et al.そのものではなく、その評価方法論を本研究の比較対象に適用したもの。
+
 ## 7. 安定性と説明評価に関する研究
 
 ### 7.1 S-LIME

@@ -27,6 +27,7 @@ from __future__ import annotations
 from itertools import combinations, permutations
 
 import numpy as np
+from scipy.stats import spearmanr
 
 
 def sum_to_one_deviation(local_preds: dict) -> float:
@@ -118,6 +119,20 @@ def mean_pairwise_feature_overlap(topk_sets: dict) -> float:
     for c1, c2 in combinations(keys, 2):
         sims.append(jaccard(topk_sets[c1], topk_sets[c2]))
     return float(np.mean(sims))
+
+
+def pairwise_coef_spearman(true_coef: np.ndarray | None, est_coef: np.ndarray | None) -> float:
+    """Rahnama et al. (2024)-style ground-truth check: Spearman rank
+    correlation between a method's estimated pairwise coefficient vector
+    and the TRUE pairwise coefficient vector of a linear (multinomial
+    logistic regression) black box. Rank correlation, not raw magnitude,
+    because Ridge/LDA shrinkage biases the *scale* of estimated
+    coefficients but should not, for a well-behaved method, disturb their
+    relative ranking -- see run_groundtruth_experiment.py."""
+    if true_coef is None or est_coef is None:
+        return float("nan")
+    r = spearmanr(true_coef, est_coef).correlation
+    return float(r) if r is not None and not np.isnan(r) else float("nan")
 
 
 def sum_to_one_deviation_topk(intercepts: dict, coefs: dict, topk_sets: dict, x: np.ndarray) -> float:
