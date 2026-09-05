@@ -3,22 +3,30 @@ does directly approximating a class PAIR (OVO) explain the black box's
 preference between those two classes more faithfully than an OVR-style
 explanation, AT THE SAME DISPLAYED FEATURE COUNT K?
 
-Three methods, all restricted to exactly K features (or, for OVR, the
-union of two K-feature class explanations -- see below):
+Four methods:
 
-  ovr_union     Each of c1, c2 gets its own independent top-K Lasso
-                one-vs-rest explanation (fit_onevsrest_lasso); the pair
-                explanation is the coefficient DIFFERENCE, whose support is
-                the UNION of the two classes' selected features (size K to
-                2K, not exactly K -- an OVR-based pairwise explanation
-                cannot be forced below 2K without dropping one class's
-                own features, so the union size is reported honestly as
-                that method's actual complexity rather than pretending
-                it's K).
-  contrastive_K fit_contrastive_lasso: log-ratio Ridge restricted to
-                exactly K features, selected jointly for the pair.
-  logistic_K    fit_ovo_logistic_lasso: soft-label logistic restricted to
-                exactly K features, selected jointly for the pair.
+  ovr_union       Each of c1, c2 gets its own independent top-K Lasso
+                  one-vs-rest explanation (fit_onevsrest_lasso); the pair
+                  explanation is the coefficient DIFFERENCE, whose support
+                  is the UNION of the two classes' selected features (size
+                  K to 2K, not exactly K -- an OVR-based pairwise
+                  explanation cannot be forced below 2K without dropping
+                  one class's own features, so the union size is reported
+                  honestly as that method's actual complexity rather than
+                  pretending it's K). This gives OVR a complexity
+                  ADVANTAGE over the two OVO methods below (confirmed
+                  empirically: ~1.3-1.4x K on average).
+  ovr_union_half  CONTROL for that advantage (added 2026-09-06): same
+                  construction, but each class only gets ceil(K/2) Lasso
+                  features, so the union lands close to K instead of well
+                  above it. If ovr_union's parity with Contrastive was
+                  just its complexity handicap, this version -- fit at
+                  matched complexity -- should show Contrastive pulling
+                  ahead.
+  contrastive_K   fit_contrastive_lasso: log-ratio Ridge restricted to
+                  exactly K features, selected jointly for the pair.
+  logistic_K      fit_ovo_logistic_lasso: soft-label logistic restricted
+                  to exactly K features, selected jointly for the pair.
 
 Fidelity is pairwise-sign agreement, measured on an INDEPENDENT held-out
 perturbation sample (never used for fitting) -- see run_combined_bc_
@@ -106,6 +114,13 @@ def run_one_cell(n_features, n_classes, rng):
             ovr_intercept = ovr1["intercept"] - ovr2["intercept"]
             ovr_union_size = len(ovr1["selected"] | ovr2["selected"])
 
+            K_half = max(1, -(-K // 2))  # ceil(K/2)
+            ovr_lasso_half = fit_onevsrest_lasso(Z, w, proba, x, K_half)
+            ovrh1, ovrh2 = ovr_lasso_half[c1], ovr_lasso_half[c2]
+            ovrh_coef = ovrh1["coef"] - ovrh2["coef"]
+            ovrh_intercept = ovrh1["intercept"] - ovrh2["intercept"]
+            ovrh_union_size = len(ovrh1["selected"] | ovrh2["selected"])
+
             con = fit_contrastive_lasso(Z, w, proba, c1, c2, x, K)
             log = fit_ovo_logistic_lasso(Z, w, proba, c1, c2, x, K)
 
@@ -113,6 +128,8 @@ def run_one_cell(n_features, n_classes, rng):
                 n_features=n_features, n_classes=n_classes, K=K,
                 ovr_union_fidelity_test=_sign_acc(ovr_coef, ovr_intercept, Z_test, proba_test, c1, c2, w_test),
                 ovr_union_complexity=ovr_union_size,
+                ovr_union_half_fidelity_test=_sign_acc(ovrh_coef, ovrh_intercept, Z_test, proba_test, c1, c2, w_test),
+                ovr_union_half_complexity=ovrh_union_size,
                 contrastive_fidelity_test=_sign_acc(con["coef"], con["intercept"], Z_test, proba_test, c1, c2, w_test),
                 logistic_fidelity_test=_sign_acc(log["coef"], log["intercept"], Z_test, proba_test, c1, c2, w_test),
             ))
@@ -153,6 +170,9 @@ def main():
         ("fidelity_test", "contrastive_fidelity_test", "ovr_union_fidelity_test"),
         ("fidelity_test", "logistic_fidelity_test", "ovr_union_fidelity_test"),
         ("fidelity_test", "logistic_fidelity_test", "contrastive_fidelity_test"),
+        ("fidelity_test", "contrastive_fidelity_test", "ovr_union_half_fidelity_test"),
+        ("fidelity_test", "logistic_fidelity_test", "ovr_union_half_fidelity_test"),
+        ("fidelity_test", "ovr_union_fidelity_test", "ovr_union_half_fidelity_test"),
     ]
     stats = compare_methods(df, ["n_features", "n_classes", "K"], pairs)
     stats.to_csv(out / "ovo_vs_ovr_stats.csv", index=False)
