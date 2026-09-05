@@ -8,7 +8,7 @@ the thing the research question is about.
 from __future__ import annotations
 
 import numpy as np
-from sklearn.linear_model import Lasso, MultiTaskLasso, Ridge
+from sklearn.linear_model import Lasso, LogisticRegression, MultiTaskLasso, Ridge
 
 
 def fit_onevsrest(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, x: np.ndarray,
@@ -307,6 +307,32 @@ def shared_support_ridge(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, 
     fit = fit_onevsrest(Z, weights, proba, x)
     vecs = [fit[c]["coef"] for c in sorted(fit)]
     return _aggregate_support(vecs, K)
+
+
+def fit_ovo_logistic(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, c1: int, c2: int,
+                     x: np.ndarray, C: float = 1.0) -> dict:
+    """Proposal C: fit q(z) = p_c1(z) / (p_c1(z)+p_c2(z)) with a WEIGHTED
+    SOFT-LABEL logistic regression instead of Contrastive's Ridge-on-
+    log-odds. logit(q) is the exact same target as fit_contrastive's
+    log(p_c1/p_c2), so this isolates the loss function: cross-entropy
+    (bounded gradient, saturates gracefully near q=0/1) vs squared error on
+    a log-transformed target (unbounded, blows up near q=0/1 -- the
+    mechanism behind the "extreme regime" degradation found earlier).
+
+    sklearn's LogisticRegression has no continuous-soft-label fit mode, so
+    each row is duplicated into a y=1 case with weight pi_i*q_i and a y=0
+    case with weight pi_i*(1-q_i); this is the standard soft-label-via-
+    case-weights construction and reproduces the weighted soft cross-
+    entropy exactly (sum_i pi_i[q_i log sigma + (1-q_i) log(1-sigma)])."""
+    q = proba[:, c1] / (proba[:, c1] + proba[:, c2] + 1e-12)
+    Z2 = np.vstack([Z, Z])
+    y2 = np.concatenate([np.ones(len(Z)), np.zeros(len(Z))])
+    w2 = np.concatenate([weights * q, weights * (1.0 - q)])
+    model = LogisticRegression(C=C, max_iter=2000)
+    model.fit(Z2, y2, sample_weight=w2)
+    coef = model.coef_[0].copy()
+    intercept = float(model.intercept_[0])
+    return {"coef": coef, "intercept": intercept, "local_pred": float(intercept + coef @ x)}
 
 
 # ---------------------------------------------------------------------------
