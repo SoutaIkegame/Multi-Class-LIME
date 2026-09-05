@@ -10,38 +10,38 @@
 - 更新日時: 2026-09-05（Claude Code on the web、リモートセッション）
 - 作業環境: リモート実行環境（Claude Code）
 - ブランチ: `claude/research-theme-evaluation-jkkx9c`（PR #5）
-- 基準コミット: `bbafa2b`
+- 基準コミット: `add6c6f`
 
 ## 今回の目的
 
-「Fisher版を提案したい。今のアルゴリズムがうまく行かないなら分析して何を変えればよいか考える」というユーザー依頼。前回までにFisher(hard)がほぼ全指標で負けることは分かっていたので、(1) 負ける原因を部品ごとに分解し、(2) その診断に基づいて提案版を設計・実装し、(3) 正直な対照と比較する。
+「Fisher版を提案したい。うまく行かないなら分析して何を変えればよいか」というユーザー依頼に対し、(1) Fisherが負ける原因の部品分解、(2) 診断に基づく提案（二段構成）の実装、(3) 正直な対照との比較、を行った。両方の実験が完走し、結論が出た。
 
 ## 実施した変更と主要な変更ファイル
 
-1. **`src/diagnose_fisher_direction.py`**（新規）: Fisher方向$S_W^{-1}(\mu_c-\mu_d)$を部品分解する診断。黒箱はロジスティック回帰（真の係数既知）、20シード×9セル、`stats_utils.compare_methods`で対応あり検定。完走済み。
-2. **`src/surrogates.py`**: 二段構成サロゲートを追加。`shared_support_fisher_soft`（Fisher soft方向の集約で全クラス共通top-K集合）、`shared_support_ridge`（対照：OVR Ridge係数の集約）、`fit_contrastive_on_support`（集合に制限したContrastive Ridge）。
-3. **`src/run_shared_support_experiment.py`**（新規）: 提案の評価。`pair_lasso`（per-pair Contrastive Lasso、独立選択）vs `fisher_select`（提案）vs `ridge_select`（対照）。黒箱ロジスティック（真のtop-K再現率、Spearman）とRF（ペア符号fidelity、特徴集合安定性＝再サンプリング間Jaccard、方向安定性、ペア横断overlap）。**このコミット時点ではフルグリッド実行中（未完了）**。
+1. `src/diagnose_fisher_direction.py`（新規）: Fisher方向の失敗要因分解。完走。結論は`PROJECT_SUMMARY.md`「Fisher方向の失敗要因分解」に恒久記載。
+2. `src/surrogates.py`: `shared_support_fisher_soft` / `shared_support_ridge` / `fit_contrastive_on_support` を追加（二段構成サロゲート）。
+3. `src/run_shared_support_experiment.py`（新規）: 提案の評価。ロジスティック黒箱（約2分）とRF黒箱（約25分）で完走。結果は`results/shared_support_{logistic,rf}_{results,stats}.csv`（gitignore対象）。要約は`PROJECT_SUMMARY.md`「共有支持集合（二段構成）の評価」。
+4. `docs/OVO_LIME_METHODS.md`: 実装状況表を更新（OVO Fisher-LIMEは診断内で`pair_*`として実装・評価済み）。
 
 ## 重要な判断とその理由
 
-1. **診断の結論**（`PROJECT_SUMMARY.md`に恒久記載）：$S_W^{-1}$は必要、クラス横断プーリングはほぼ無料、ハードラベルが最大の損失源、残る差はクラス内散布を尺度に使うことに内在する偏り。→ Fisherは係数推定器としては回帰に勝てないが、共有構造の供給源としては精度コストなしで使える。
-2. **提案を二段構成にした理由**：上の診断から、Fisherに残された役割は「どの特徴を使うか（全クラス共通）」であり、「どれだけの重みか」はContrastive回帰に任せるのが正しい分業。LIMEtreeの「共通構造」の定義に直接対応する。
-3. **`OVO_LIME_METHODS.md`のFisher-metric ridge案（$S_W$を罰則行列にする）は不採用**。診断(5)で$S_W$尺度そのものが偏りの源だと分かったため、それを回帰に持ち込む設計は改悪になる。
-4. **対照としてRidge集約版を必ず入れた**。Fisher選択が「単に密なランキングを共有しただけ」の効果と区別できなければ、Fisher固有の価値はないと結論すべき。スモークテストでは両者の選択がかなり一致していた。
+1. **Fisherを「提案」から降ろし「分析章」に位置づけ直すことを推奨**（`PROJECT_SUMMARY.md`に記載）。根拠：係数推定器としては$S_W$尺度の偏りで回帰に本質的に勝てない（診断）、共有集合の供給源としてもRidge集約と全指標で区別できない（今回）。
+2. **「共有支持集合＋Contrastive再フィット」自体は有用な一貫性ノブとして残す**。RF黒箱でper-pair Lassoに対しfidelity・特徴集合安定性・overlapで有意に優れ、代償（着目ペア固有特徴の取りこぼし、真top-K再現率−4〜5pt）も定量化できた。ただし供給源はRidge集約で十分。
+3. Fisher-metric ridge（$S_W$を罰則行列にする案）は不採用（診断で$S_W$尺度自体が偏りの源）。
 
 ## 実行したテスト・確認結果
 
-- `diagnose_fisher_direction.py`: フルグリッド完走（約15秒）。主要数値は`PROJECT_SUMMARY.md`参照。
-- `run_shared_support_experiment.py`: 縮小グリッドでスモークテスト済み（両黒箱ともエラーなく統計表まで出力）。フルグリッドはバックグラウンド実行中（logistic：数分、RF：30分程度の見込み）。
+- 両実験ともフルグリッド（9セル×20シード×K=2水準）完走、exit code 0。Holm補正後の有意セル数は`PROJECT_SUMMARY.md`の数値どおり（集計スクリプトはアドホック、`stats.csv`から再計算可能）。
 
 ## 未完了・既知の問題・未検証事項
 
-- **`run_shared_support_experiment.py`のフルグリッド結果は未取得**。結果次第で提案の位置づけが変わる：Fisher選択がRidge選択に勝てば「Fisher固有の共有構造に価値あり」、同等なら「共有構造自体には価値があるがFisherである必要はない」、per-pair Lassoに劣れば「共有はfidelityコストが大きい」。
-- 特徴重要度の順位は生の係数単位（|θ_j|）で比較しており、標準化効果（|θ_j|·std_j）では測っていない。他のground-truth実験と整合させるための選択だが、注記が必要。
+- **ラベルのみ黒箱**（`predict_proba`が無い状況）でのFisher(hard) vs OVR(0/1ラベル回帰)の比較は未実施。Fisherに残る唯一の原理的な居場所候補。ユーザーの判断待ち。
+- 中間発表（2026-09-12）向けのストーリー組み替えは文書に書いたが、スライド（`docs/MIDTERM_PRESENTATION_DRAFT.md`）には未反映。
+- 特徴重要度の順位は生の係数単位で比較（標準化効果ではない）。注記が必要。
 - 前回からの持ち越し：ソフト版Fisherのstabilityフルグリッド未検証、`investigate_reversal.py`の統計化未実施、実データ未検証、インスタンス選択の妥当性。
 
 ## 次に行うこと
 
-1. `run_shared_support_experiment.py`の結果を読み、`PROJECT_SUMMARY.md`に提案の評価結果を恒久記載する。
-2. 結果に応じて提案の最終形を決める（Fisher選択 vs Ridge選択の差が出なければ、提案は「共有支持集合＋Contrastive回帰」として書き、Fisherは診断上の位置づけに留める）。
-3. 中間発表向けに「Fisherが負ける理由の分解」を1枚にまとめる。
+1. ユーザーと「Fisherを分析章に降ろす」方針を確認する。
+2. 確認が取れたら、ラベルのみ黒箱の検証を1本追加するか決める（既存コードで1スクリプト、数分）。
+3. 中間発表ドラフトを新ストーリー（問題設定 → Contrastive提案 → 一貫性ノブ → Fisherの分析）に合わせて改訂する。

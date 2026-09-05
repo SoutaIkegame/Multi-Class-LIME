@@ -998,7 +998,8 @@ $$
 | Contrastive LIME | 現在のローカル`main`に`fit_contrastive`と`fit_contrastive_lasso`を実装済み |
 | Group Lasso共同log-ratio | 過去のリモート作業ブランチでは実装・修正履歴があるが、現在のローカル`main`の`src/`には未反映 |
 | OVO Logistic-LIME | 未実装 |
-| OVO Fisher-LIME | 未実装 |
+| OVO Fisher-LIME | `src/diagnose_fisher_direction.py`の`pair_hard`/`pair_soft`として実装・評価済み（2026-09-05）。pooled版との差はほぼゼロ（真の係数とのSpearmanで≤0.005） |
+| 共有支持集合＋Contrastive再フィット（二段構成） | `src/surrogates.py`の`shared_support_fisher_soft` / `shared_support_ridge` / `fit_contrastive_on_support`（2026-09-05）。評価は`src/run_shared_support_experiment.py` |
 
 Group Lassoの確率復元では、目的変数を
 
