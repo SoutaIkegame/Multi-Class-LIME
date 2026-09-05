@@ -259,10 +259,13 @@ def top_k_indices(vec: np.ndarray, k: int) -> frozenset:
 # Two-stage "shared support" surrogates (proposal, 2026-09-05)
 #
 # Diagnosis (src/diagnose_fisher_direction.py): as a COEFFICIENT estimator
-# Fisher's S_W^{-1}(mu_c - mu_d) is dominated by direct log-odds regression,
-# and the residual gap is inherent (within-class scatter is the wrong metric
-# for a discriminative target). But pooling S_W across all classes -- the
-# thing that gives Fisher its cross-class shared structure -- costs nothing.
+# Fisher's S_W^{-1}(mu_c - mu_d) is dominated by direct log-odds regression
+# in this setup (this neighborhood sampling, this label weighting, this
+# shrinkage) -- not a proven general limitation of Fisher, since the two
+# estimators target different quantities (within-class-scatter-scaled
+# centroid distance vs. a direct log-odds regression coefficient). But
+# pooling S_W across all classes -- the thing that gives Fisher its
+# cross-class shared structure -- costs nothing in this setup.
 # So the role left for Fisher is STRUCTURE, not coefficients: choose ONE
 # feature subset shared by every class/pair (LIMEtree's "common structure"
 # desideratum), then let Contrastive regression supply the coefficients.

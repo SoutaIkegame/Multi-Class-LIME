@@ -9,6 +9,16 @@ experiment.py:
             EXTREME_THRESHOLD split as run_extreme_regime_experiment.py)
             and normalized direction variance under resampling
 
+CAVEAT (found 2026-09-05): the rf-side fidelity/extreme/moderate numbers
+are measured on the SAME Z used to fit each variant -- in-sample fit
+quality, not evidence of generalization to an unseen neighborhood. The
+logistic-side Spearman/recall numbers are not affected by this (they
+compare fitted coefficients to the true population theta, not to
+predictions on the fitting sample). The held-out re-measurement of the rf
+comparison lives in run_combined_bc_experiment.py's *_test columns --
+treat that script's numbers as authoritative for C's fidelity claims, not
+this one's.
+
 Usage: python3 src/run_logistic_target_experiment.py
 Output: results/logistic_target_{logistic,rf}_{results,stats}.csv
 """

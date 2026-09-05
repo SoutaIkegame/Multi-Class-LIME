@@ -9,6 +9,23 @@ similar margins. This tests all four combinations on the RF black box.
   logistic    fit_ovo_logistic with the plain LIME kernel (C alone)
   combined    fit_ovo_logistic with the contest-weighted kernel (B+C)
 
+IMPORTANT (fixed 2026-09-05, was flagged as a real bug): every method is
+fit on one perturbed neighborhood Z and previous versions of this script
+also measured fidelity on that SAME Z. That is in-sample fit quality, not
+evidence the surrogate generalizes to a fresh neighborhood around the same
+point -- a kernel that reweights samples during fitting could look better
+purely by fitting its own reweighted training points more closely. Every
+fidelity/extreme/moderate metric below is now reported BOTH ways:
+  *_fidelity_train / *_extreme_train / *_moderate_train   (old behavior,
+      evaluated on the fitting sample Z -- kept only for comparison)
+  *_fidelity_test / *_extreme_test / *_moderate_test       (evaluated on
+      an INDEPENDENTLY drawn Z_test from the same instance/kernel, computed
+      with the SAME unweighted-by-method LIME kernel for every variant --
+      this is the number that actually says something about generalization
+      to an unseen neighborhood, and is what the headline comparison uses)
+direction_variance is unaffected (it was already computed from independent
+resampling repeats, never from the fitting sample).
+
 Usage: python3 src/run_combined_bc_experiment.py
 Output: results/combined_bc_{results,stats}.csv
 """
@@ -90,12 +107,21 @@ def run_one_cell(n_features, n_classes, rng):
         proba = clf.predict_proba(Z)
         extreme = np.minimum(proba[:, c1], proba[:, c2]) < EXTREME_THRESHOLD
 
+        # Independent held-out neighborhood: same instance x, same kernel,
+        # fresh noise draw -- never touched by any of the _fit() calls below.
+        Z_test, w_test = sample_perturbations(x, feature_std, N_PERTURB_SAMPLES, rng)
+        proba_test = clf.predict_proba(Z_test)
+        extreme_test = np.minimum(proba_test[:, c1], proba_test[:, c2]) < EXTREME_THRESHOLD
+
         fits = {v: _fit(v, Z, w, proba, c1, c2, x) for v in VARIANTS}
         row = dict(n_features=n_features, n_classes=n_classes)
         for v, f in fits.items():
-            row[f"{v}_fidelity"] = _sign_acc(f["coef"], f["intercept"], Z, proba, c1, c2, w)
-            row[f"{v}_extreme"] = _sign_acc(f["coef"], f["intercept"], Z, proba, c1, c2, w, extreme)
-            row[f"{v}_moderate"] = _sign_acc(f["coef"], f["intercept"], Z, proba, c1, c2, w, ~extreme)
+            row[f"{v}_fidelity_train"] = _sign_acc(f["coef"], f["intercept"], Z, proba, c1, c2, w)
+            row[f"{v}_extreme_train"] = _sign_acc(f["coef"], f["intercept"], Z, proba, c1, c2, w, extreme)
+            row[f"{v}_moderate_train"] = _sign_acc(f["coef"], f["intercept"], Z, proba, c1, c2, w, ~extreme)
+            row[f"{v}_fidelity_test"] = _sign_acc(f["coef"], f["intercept"], Z_test, proba_test, c1, c2, w_test)
+            row[f"{v}_extreme_test"] = _sign_acc(f["coef"], f["intercept"], Z_test, proba_test, c1, c2, w_test, extreme_test)
+            row[f"{v}_moderate_test"] = _sign_acc(f["coef"], f["intercept"], Z_test, proba_test, c1, c2, w_test, ~extreme_test)
 
         hist = {v: [fits[v]["coef"]] for v in VARIANTS}
         for _ in range(N_STABILITY_REPEATS - 1):
@@ -132,7 +158,10 @@ def main():
     print("\n=== overall ===")
     print(df[cols].mean().round(4))
 
-    metrics = ["fidelity", "extreme", "moderate", "direction_variance"]
+    # Headline comparison uses the held-out (_test) metrics only -- _train
+    # metrics are in-sample fit quality, kept in the raw CSV for comparison
+    # but not used to draw conclusions (see module docstring).
+    metrics = ["fidelity_test", "extreme_test", "moderate_test", "direction_variance"]
     pairs = []
     for m in metrics:
         pairs += [

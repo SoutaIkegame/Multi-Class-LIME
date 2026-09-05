@@ -20,6 +20,15 @@ standard kernel pi so the comparison is on identical ground; fidelity is
 reported on the whole neighborhood, the extreme region, and the moderate
 region, plus normalized direction variance under resampling.
 
+CAVEAT (found 2026-09-05): fidelity/extreme/moderate below are measured on
+the SAME Z used to fit each variant -- in-sample fit quality, not evidence
+of generalization to an unseen neighborhood. direction_variance is fine (it
+already comes from independent resampling repeats). The properly held-out
+re-measurement of this exact comparison (plus proposal C and the B+C
+combination) lives in run_combined_bc_experiment.py's *_test columns --
+treat that script's numbers as authoritative for B's fidelity claims, not
+this one's.
+
 Usage: python3 src/run_pair_kernel_experiment.py
 Output: results/pair_kernel_{results,stats}.csv
 """
