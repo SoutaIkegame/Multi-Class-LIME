@@ -42,7 +42,7 @@ from sklearn.model_selection import train_test_split
 sys.path.insert(0, str(Path(__file__).parent))
 from perturbation import sample_perturbations  # noqa: E402
 from surrogates import (  # noqa: E402
-    fit_contrastive_lasso, fit_contrastive_on_support,
+    fit_contrastive_lasso, fit_contrastive_on_support, fit_joint_contrastive,
     shared_support_fisher_soft, shared_support_ridge, top_k_indices,
 )
 from metrics import pairwise_coef_spearman, jaccard, total_variance_normalized  # noqa: E402
@@ -58,7 +58,12 @@ N_STABILITY_REPEATS = 6
 SEED = 0
 N_DATASET_SEEDS = 20
 
-METHODS = ["pair_lasso", "fisher_select", "ridge_select"]
+METHODS = ["pair_lasso", "fisher_select", "ridge_select", "joint_lasso", "joint_refit"]
+# joint_lasso  Proposal A: Multi-task Contrastive LIME (L2,1 joint fit of all
+#              class log-probabilities), pair coefficients gamma_c - gamma_d
+#              taken directly from the joint model
+# joint_refit  same learned shared support, Contrastive ridge refit per pair
+#              (isolates "joint selection" from "Lasso shrinkage")
 
 
 def _sign_fidelity(coef, intercept, Z, proba, c1, c2, weights):
@@ -74,7 +79,29 @@ def _fit_all(Z, weights, proba, x, c1, c2, classes, K):
     out["fisher_select"] = fit_contrastive_on_support(Z, weights, proba, c1, c2, x, s_f)
     s_r = shared_support_ridge(Z, weights, proba, x, K)
     out["ridge_select"] = fit_contrastive_on_support(Z, weights, proba, c1, c2, x, s_r)
+    joint = fit_joint_contrastive(Z, weights, proba, x, K)
+    out["joint_lasso"] = joint["pair"](c1, c2)
+    out["joint_refit"] = fit_contrastive_on_support(Z, weights, proba, c1, c2, x, joint["selected"])
     return out
+
+
+def _cycle_residual(pair_coefs: dict) -> float:
+    """Mean over class triples (a,b,c) of ||b_ab + b_bc - b_ac|| relative to
+    the mean norm of the three vectors. Exactly 0 for any method whose pair
+    coefficients are gamma_a - gamma_b (joint model) or a fixed linear map of
+    the pair target on one shared support (ridge refit); only per-pair
+    Lasso, with pair-specific supports and shrinkage, can violate it."""
+    def get(a, b):
+        if (a, b) in pair_coefs:
+            return pair_coefs[(a, b)]
+        return -pair_coefs[(b, a)]
+    classes = sorted({c for p in pair_coefs for c in p})
+    res = []
+    for a, b, c in combinations(classes, 3):
+        v = get(a, b) + get(b, c) - get(a, c)
+        scale = np.mean([np.linalg.norm(get(a, b)), np.linalg.norm(get(b, c)), np.linalg.norm(get(a, c))])
+        res.append(np.linalg.norm(v) / (scale + 1e-12))
+    return float(np.mean(res)) if res else float("nan")
 
 
 def run_one_cell(n_features, n_classes, rng, black_box: str) -> list[dict]:
@@ -122,17 +149,24 @@ def run_one_cell(n_features, n_classes, rng, black_box: str) -> list[dict]:
                 for m, f in fits.items():
                     row[f"{m}_fidelity"] = _sign_fidelity(f["coef"], f["intercept"], Z, proba, c1, c2, weights)
 
-                # cross-pair overlap: only pair_lasso can differ across pairs
-                supports = {}
+                # cross-pair overlap and cycle residual: only pair_lasso can
+                # differ across pairs / violate the cycle identity
+                supports, coefs = {}, {}
                 for (a, b) in all_pairs:
-                    if (a, b) == (c1, c2) or (a, b) == (c2, c1):
-                        supports[(a, b)] = fits["pair_lasso"]["selected"]
+                    if (a, b) == (c1, c2):
+                        f = fits["pair_lasso"]
+                    elif (a, b) == (c2, c1):
+                        f = {"selected": fits["pair_lasso"]["selected"], "coef": -fits["pair_lasso"]["coef"]}
                     else:
-                        supports[(a, b)] = fit_contrastive_lasso(Z, weights, proba, a, b, x, K)["selected"]
+                        f = fit_contrastive_lasso(Z, weights, proba, a, b, x, K)
+                    supports[(a, b)] = f["selected"]
+                    coefs[(a, b)] = f["coef"]
                 sims = [jaccard(supports[p], supports[q]) for p, q in combinations(supports, 2)]
                 row["pair_lasso_crosspair_overlap"] = float(np.mean(sims)) if sims else float("nan")
-                row["fisher_select_crosspair_overlap"] = 1.0
-                row["ridge_select_crosspair_overlap"] = 1.0
+                row["pair_lasso_cycle_residual"] = _cycle_residual(coefs)
+                for m in METHODS[1:]:
+                    row[f"{m}_crosspair_overlap"] = 1.0
+                    row[f"{m}_cycle_residual"] = 0.0
 
                 # stability under resampling: support Jaccard + direction variance
                 sup_hist = {m: [fits[m]["selected"]] for m in METHODS}
@@ -182,8 +216,11 @@ def run_black_box(black_box: str, out: Path):
     pairs = []
     for met in metrics:
         pairs += [
+            (met, f"joint_refit_{met}", f"ridge_select_{met}"),
+            (met, f"joint_refit_{met}", f"pair_lasso_{met}"),
+            (met, f"joint_lasso_{met}", f"pair_lasso_{met}"),
+            (met, f"joint_refit_{met}", f"joint_lasso_{met}"),
             (met, f"fisher_select_{met}", f"ridge_select_{met}"),
-            (met, f"fisher_select_{met}", f"pair_lasso_{met}"),
             (met, f"ridge_select_{met}", f"pair_lasso_{met}"),
         ]
     stats = compare_methods(df, ["n_features", "n_classes", "K"], pairs)

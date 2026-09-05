@@ -8,7 +8,7 @@ the thing the research question is about.
 from __future__ import annotations
 
 import numpy as np
-from sklearn.linear_model import Lasso, Ridge
+from sklearn.linear_model import Lasso, MultiTaskLasso, Ridge
 
 
 def fit_onevsrest(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, x: np.ndarray,
@@ -307,6 +307,86 @@ def shared_support_ridge(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, 
     fit = fit_onevsrest(Z, weights, proba, x)
     vecs = [fit[c]["coef"] for c in sorted(fit)]
     return _aggregate_support(vecs, K)
+
+
+# ---------------------------------------------------------------------------
+# Proposal A (2026-09-05): Multi-task Contrastive LIME -- ONE joint model for
+# every class pair.
+#
+# Per-pair Contrastive Lasso fits C(C,2) independent models, so nothing ties
+# their supports together (LIMEtree's "different feature subsets" failure)
+# and nothing enforces beta_ab + beta_bc = beta_ac. Here all classes' log-
+# probabilities are fit at once as a multi-output regression,
+#
+#     y_c(z) = log p_c(z) - mean_k log p_k(z),   c = 1..C,
+#
+# with an L2,1 (group-lasso across classes) penalty: a feature is either
+# used by EVERY class or by none, so the shared support is learned, not
+# imposed afterwards. The pair explanation is gamma_c - gamma_d, hence
+# cycle-consistent by construction; centering by the class mean keeps the
+# parameterization symmetric (no arbitrary reference class).
+# ---------------------------------------------------------------------------
+
+def _weighted_center(Z, Y, weights):
+    w = weights / weights.sum()
+    z_bar = w @ Z
+    y_bar = w @ Y
+    sw = np.sqrt(weights)[:, None]
+    return sw * (Z - z_bar), sw * (Y - y_bar), z_bar, y_bar
+
+
+def _mtl_fit(Zc, Yc, alpha):
+    m = MultiTaskLasso(alpha=alpha, fit_intercept=False, max_iter=5000)
+    m.fit(Zc, Yc)
+    W = m.coef_.T  # (n_features, n_classes)
+    nnz = int(np.sum(np.linalg.norm(W, axis=1) > 1e-10))
+    return nnz, W
+
+
+def fit_joint_contrastive(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, x: np.ndarray,
+                          K: int, eps: float = 1e-6, lo: float = 1e-4, hi: float = 100.0,
+                          iters: int = 15) -> dict:
+    """Multi-task Contrastive LIME at explanation size K: binary-search the
+    L2,1 penalty for the sparsest joint fit with >= K active features, keep
+    the top-K rows by norm (mirrors _sparsest_lasso_with_at_least_k so the
+    comparison with per-pair Lasso is at equal K).
+
+    Returns gamma (n_features x n_classes, zero off-support), per-class
+    intercepts, the shared support, and a helper pair(c1, c2) giving the
+    dense coefficient vector and intercept of log(p_c1/p_c2)."""
+    Y = np.log(proba + eps)
+    Y = Y - Y.mean(axis=1, keepdims=True)
+    Zc, Yc, z_bar, y_bar = _weighted_center(Z, Y, weights)
+
+    n_lo, W_lo = _mtl_fit(Zc, Yc, lo)
+    n_hi, W_hi = _mtl_fit(Zc, Yc, hi)
+    if n_hi >= K:
+        W = W_hi
+    elif n_lo < K:
+        W = W_lo
+    else:
+        W = W_lo
+        a_lo, a_hi = lo, hi
+        for _ in range(iters):
+            mid = float(np.sqrt(a_lo * a_hi))
+            n_mid, W_mid = _mtl_fit(Zc, Yc, mid)
+            if n_mid >= K:
+                a_lo, W = mid, W_mid
+            else:
+                a_hi = mid
+    row_norm = np.linalg.norm(W, axis=1)
+    idx = np.argsort(-row_norm)[:K]
+    gamma = np.zeros_like(W)
+    gamma[idx] = W[idx]
+    intercepts = y_bar - z_bar @ gamma  # (n_classes,)
+    support = frozenset(idx.tolist())
+
+    def pair(c1: int, c2: int) -> dict:
+        coef = gamma[:, c1] - gamma[:, c2]
+        b = float(intercepts[c1] - intercepts[c2])
+        return {"coef": coef, "intercept": b, "local_pred": float(b + coef @ x), "selected": support}
+
+    return {"gamma": gamma, "intercepts": intercepts, "selected": support, "pair": pair}
 
 
 def fit_contrastive_on_support(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray,
