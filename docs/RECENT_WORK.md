@@ -7,64 +7,41 @@
 
 ## 更新情報
 
-- 更新日時: 2026-09-03（Claude Code on the web、リモートセッション）
+- 更新日時: 2026-09-05（Claude Code on the web、リモートセッション）
 - 作業環境: リモート実行環境（Claude Code）
-- ブランチ: `claude/research-theme-evaluation-jkkx9c`
-- 基準コミット: `9abeced`（統計的厳密性強化コミット）
+- ブランチ: `claude/research-theme-evaluation-jkkx9c`（PR #5）
+- 基準コミット: `bbafa2b`
 
 ## 今回の目的
 
-前回セッションで、他分野の関連研究（LIMEtree, SLISEMAP, AIM, CLIMAX, Rahnama et al., TERP）が使う評価指標を整理し、現行の4指標（sum-to-one, feature overlap, stability, fidelity）と対応させたところ、**Rahnama et al. (2024)型のground-truth検証（黒箱自体が線形モデルで真の係数が既知の場合に、サロゲートがその係数を復元できるかを見る）が未実装**だと分かった。今回はこれを実験として追加した。
+「Fisher版を提案したい。今のアルゴリズムがうまく行かないなら分析して何を変えればよいか考える」というユーザー依頼。前回までにFisher(hard)がほぼ全指標で負けることは分かっていたので、(1) 負ける原因を部品ごとに分解し、(2) その診断に基づいて提案版を設計・実装し、(3) 正直な対照と比較する。
 
 ## 実施した変更と主要な変更ファイル
 
-1. **`src/metrics.py`**: `pairwise_coef_spearman(true_coef, est_coef)`を追加。真の係数ベクトルと推定係数ベクトルのSpearman順位相関。Ridge/LDAの縮小推定は係数の「大きさ」に偏りを生むが「順位」は保つはずという理由で、生の大きさではなく順位相関を使う（Rahnama et al.と同じ方針）。
-2. **`src/run_groundtruth_experiment.py`**（新規）: 黒箱をこれまでの`RandomForestClassifier`から`LogisticRegression(multi_class='multinomial')`に差し替えた実験ドライバ。多項ロジスティック回帰は対数オッズについて厳密に線形（$\log(p_c/p_d)=(\theta_c-\theta_d)\cdot z+\text{const}$がどこでも成立）なので、真の係数$\theta_{c^*}-\theta_{c'}$がどの点でも既知になる。この真の係数と、OVR・Fisher(hard)・Fisher(soft)・Contrastiveそれぞれの推定係数のSpearman順位相関を測る。前回整備した統計的枠組み（`N_DATASET_SEEDS=20`、`stats_utils.compare_methods`）をそのまま流用。結果は`results/groundtruth_results.csv`、統計比較は`results/groundtruth_stats.csv`。
+1. **`src/diagnose_fisher_direction.py`**（新規）: Fisher方向$S_W^{-1}(\mu_c-\mu_d)$を部品分解する診断。黒箱はロジスティック回帰（真の係数既知）、20シード×9セル、`stats_utils.compare_methods`で対応あり検定。完走済み。
+2. **`src/surrogates.py`**: 二段構成サロゲートを追加。`shared_support_fisher_soft`（Fisher soft方向の集約で全クラス共通top-K集合）、`shared_support_ridge`（対照：OVR Ridge係数の集約）、`fit_contrastive_on_support`（集合に制限したContrastive Ridge）。
+3. **`src/run_shared_support_experiment.py`**（新規）: 提案の評価。`pair_lasso`（per-pair Contrastive Lasso、独立選択）vs `fisher_select`（提案）vs `ridge_select`（対照）。黒箱ロジスティック（真のtop-K再現率、Spearman）とRF（ペア符号fidelity、特徴集合安定性＝再サンプリング間Jaccard、方向安定性、ペア横断overlap）。**このコミット時点ではフルグリッド実行中（未完了）**。
 
 ## 重要な判断とその理由
 
-1. **黒箱をLogisticRegressionに差し替えた**（他の実験群はRandomForestのまま）。RandomForestには閉形式の「真の局所係数」が存在しないため、ground-truth検証にはそもそも使えない。この実験だけ黒箱の種類が異なる点に注意（他の実験群との直接比較はできない、これは別軸の検証）。
-2. **順位相関（Spearman）を使い、生の係数の大きさは比較しない**。Fisherの$S_W^{-1}(\mu_c-\mu_d)$やRidgeの縮小推定には自然な尺度がないため、大きさの比較は意味を持たない。RELATED_WORKで整理したRahnama et al.の方針をそのまま踏襲。
-3. **既存のデータ生成設計（相関の強い冗長特徴量あり）をそのまま維持した**。真の$\theta$自体がこの冗長性の影響を受けた値になる（多項ロジスティック回帰も相関特徴間で任意に重みを分配する）ため、サロゲート側の推定にも同じ困難が課される公平な設定になっている。
+1. **診断の結論**（`PROJECT_SUMMARY.md`に恒久記載）：$S_W^{-1}$は必要、クラス横断プーリングはほぼ無料、ハードラベルが最大の損失源、残る差はクラス内散布を尺度に使うことに内在する偏り。→ Fisherは係数推定器としては回帰に勝てないが、共有構造の供給源としては精度コストなしで使える。
+2. **提案を二段構成にした理由**：上の診断から、Fisherに残された役割は「どの特徴を使うか（全クラス共通）」であり、「どれだけの重みか」はContrastive回帰に任せるのが正しい分業。LIMEtreeの「共通構造」の定義に直接対応する。
+3. **`OVO_LIME_METHODS.md`のFisher-metric ridge案（$S_W$を罰則行列にする）は不採用**。診断(5)で$S_W$尺度そのものが偏りの源だと分かったため、それを回帰に持ち込む設計は改悪になる。
+4. **対照としてRidge集約版を必ず入れた**。Fisher選択が「単に密なランキングを共有しただけ」の効果と区別できなければ、Fisher固有の価値はないと結論すべき。スモークテストでは両者の選択がかなり一致していた。
 
 ## 実行したテスト・確認結果
 
-- 縮小グリッド（1セル、seed数3〜5）でのスモークテストで正常動作を確認。
-- フルグリッド（9セル×`N_DATASET_SEEDS=20`）を実行、約15秒で完走（LogisticRegressionはRandomForestよりはるかに高速）。
-
-## 主要な結果（全てWilcoxon対応あり検定、20独立データセットseed、Holm-Bonferroni補正後のp値で判定）
-
-全グリッド平均のSpearman ρ（1に近いほど真の係数ランキングを正しく復元）:
-
-| 手法 | 平均 ρ | グリッド内の範囲 |
-|---|---|---|
-| Contrastive | 0.999 | 0.998〜1.000 |
-| Fisher (soft) | 0.983 | 0.981〜0.987 |
-| OVR | 0.976 | 0.972〜0.980 |
-| Fisher (hard) | 0.953 | 0.941〜0.966 |
-
-統計的な優劣（`results/groundtruth_stats.csv`）:
-- **Contrastive vs OVR / Fisher(hard) / Fisher(soft)**: 全9セルでContrastiveが有意に優位（p≦0.0003）。**Contrastiveにとって今までで最も明確な勝ちどころ**。
-- **OVR vs Fisher(hard)**: 全9セルでOVRが有意に優位（p≦0.012）。
-- **Fisher(soft) vs Fisher(hard)**: 全9セルでFisher(soft)が有意に優位（p≦0.0002）。
-- **Fisher(soft) vs OVR**: 9セル中8セルでFisher(soft)が有意に優位（n_features=8, n_classes=3のみ非有意）。
-
-総合順位 Contrastive > Fisher(soft) > OVR > Fisher(hard) が、ほぼ全ペア・全セルで統計的に確定した。
-
-理論的な解釈: Contrastiveは対数オッズを直接回帰するため、黒箱が対数オッズについて線形である限り真の係数をほぼ完璧に復元できる（数学的に予想通り）。OVRは生の確率（softmaxで非線形）を回帰するため一致度が下がる。Fisher(hard)が最下位なのは、stability・極端領域fidelityで既に見えていた「ハードラベルによるサンプル飢餓」問題の別角度での再確認と考えられる。
+- `diagnose_fisher_direction.py`: フルグリッド完走（約15秒）。主要数値は`PROJECT_SUMMARY.md`参照。
+- `run_shared_support_experiment.py`: 縮小グリッドでスモークテスト済み（両黒箱ともエラーなく統計表まで出力）。フルグリッドはバックグラウンド実行中（logistic：数分、RF：30分程度の見込み）。
 
 ## 未完了・既知の問題・未検証事項
 
-- この実験は黒箱をLogisticRegressionに変えているため、他の実験（RandomForest黒箱）と直接同じ土俵で比較はできない。「黒箱が線形なら」という条件付きの結果である点に注意。
-- 黒箱が非線形（本来のRandomForest）な場合、真の局所係数という概念自体が定義できないため、この検証軸を非線形黒箱に拡張する方法はまだ考えていない。
-- ソフト版Fisherのstability（正規化）は依然としてフルグリッド未検証（前回からの持ち越し）。
-- `src/investigate_reversal.py`はまだ単一シードのアドホック診断のまま（前回からの持ち越し）。
-- インスタンス選択（マージン最小8点のみ）、実データ未検証、グリッドの粗さは引き続きスコープ外。
+- **`run_shared_support_experiment.py`のフルグリッド結果は未取得**。結果次第で提案の位置づけが変わる：Fisher選択がRidge選択に勝てば「Fisher固有の共有構造に価値あり」、同等なら「共有構造自体には価値があるがFisherである必要はない」、per-pair Lassoに劣れば「共有はfidelityコストが大きい」。
+- 特徴重要度の順位は生の係数単位（|θ_j|）で比較しており、標準化効果（|θ_j|·std_j）では測っていない。他のground-truth実験と整合させるための選択だが、注記が必要。
+- 前回からの持ち越し：ソフト版Fisherのstabilityフルグリッド未検証、`investigate_reversal.py`の統計化未実施、実データ未検証、インスタンス選択の妥当性。
 
 ## 次に行うこと
 
-1. グラウンドトゥルース検証の結果を、修論の主張の中心的な柱として位置づけることを検討する（Contrastiveの最も明確な優位性のため）。
-2. ソフト版Fisherのstabilityを、今回整備した統計的枠組みでフルグリッド検証する。
-3. `investigate_reversal.py`を同じ統計的枠組みで再検証する。
-4. one-vs-rest, Fisher(hard/soft), Contrastiveの全指標（fidelity絶対値/ペア符号、stability、feature overlap、極端領域fidelity、グラウンドトゥルース復元）の結果を統合し、修論の主張として文章化する。
-5. 実データセットでの再現性確認。
+1. `run_shared_support_experiment.py`の結果を読み、`PROJECT_SUMMARY.md`に提案の評価結果を恒久記載する。
+2. 結果に応じて提案の最終形を決める（Fisher選択 vs Ridge選択の差が出なければ、提案は「共有支持集合＋Contrastive回帰」として書き、Fisherは診断上の位置づけに留める）。
+3. 中間発表向けに「Fisherが負ける理由の分解」を1枚にまとめる。

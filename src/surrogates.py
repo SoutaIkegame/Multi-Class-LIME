@@ -253,3 +253,78 @@ def top_k_indices(vec: np.ndarray, k: int) -> frozenset:
     k = min(k, vec.shape[0])
     order = np.argsort(-np.abs(vec))[:k]
     return frozenset(order.tolist())
+
+
+# ---------------------------------------------------------------------------
+# Two-stage "shared support" surrogates (proposal, 2026-09-05)
+#
+# Diagnosis (src/diagnose_fisher_direction.py): as a COEFFICIENT estimator
+# Fisher's S_W^{-1}(mu_c - mu_d) is dominated by direct log-odds regression,
+# and the residual gap is inherent (within-class scatter is the wrong metric
+# for a discriminative target). But pooling S_W across all classes -- the
+# thing that gives Fisher its cross-class shared structure -- costs nothing.
+# So the role left for Fisher is STRUCTURE, not coefficients: choose ONE
+# feature subset shared by every class/pair (LIMEtree's "common structure"
+# desideratum), then let Contrastive regression supply the coefficients.
+#
+# The honest control is the same two-stage scheme with the shared subset
+# chosen from plain OVR ridge magnitudes instead of Fisher directions. If
+# that matches Fisher, the Fisher step adds nothing and the thesis should
+# say so.
+# ---------------------------------------------------------------------------
+
+def _aggregate_support(vectors: list[np.ndarray], K: int) -> frozenset:
+    """Shared top-K support from several per-class direction vectors: each
+    vector is normalized to unit norm (so no class dominates by scale), the
+    absolute values are summed feature-wise, and the K largest are kept."""
+    score = np.zeros_like(vectors[0], dtype=float)
+    for v in vectors:
+        n = np.linalg.norm(v)
+        if n > 1e-12:
+            score += np.abs(v) / n
+    return top_k_indices(score, K)
+
+
+def shared_support_fisher_soft(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray,
+                               classes: np.ndarray, K: int) -> frozenset:
+    """Proposal, stage 1: one feature subset for ALL classes, chosen from the
+    soft-label pooled-S_W Fisher one-vs-rest directions
+    v_c = S_W^{-1}(mu_c - mu_{not c}). Soft labels because hard-label sample
+    starvation was the single largest fixable error in the diagnosis."""
+    fit = fit_fisher_soft(Z, weights, proba, classes)
+    vecs = [v for c in classes if (v := fit["onevsrest_direction"](c)) is not None]
+    if not vecs:
+        return frozenset(range(min(K, Z.shape[1])))
+    return _aggregate_support(vecs, K)
+
+
+def shared_support_ridge(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, x: np.ndarray,
+                         K: int) -> frozenset:
+    """Control for stage 1: same aggregation rule, but the per-class vectors
+    are the dense OVR ridge coefficients (fit_onevsrest) instead of Fisher
+    directions. Isolates whether the Fisher geometry itself picks a better
+    shared subset than ordinary regression magnitudes do."""
+    fit = fit_onevsrest(Z, weights, proba, x)
+    vecs = [fit[c]["coef"] for c in sorted(fit)]
+    return _aggregate_support(vecs, K)
+
+
+def fit_contrastive_on_support(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray,
+                               c1: int, c2: int, x: np.ndarray, support: frozenset,
+                               eps: float = 1e-6, alpha: float = 1.0) -> dict:
+    """Stage 2: Contrastive log-odds ridge restricted to `support`. Returns a
+    dense coef vector (zeros off-support) so it is drop-in comparable with
+    fit_contrastive / fit_contrastive_lasso outputs."""
+    idx = np.array(sorted(support), dtype=int)
+    y = np.log((proba[:, c1] + eps) / (proba[:, c2] + eps))
+    model = Ridge(alpha=alpha)
+    model.fit(Z[:, idx], y, sample_weight=weights)
+    coef = np.zeros(Z.shape[1])
+    coef[idx] = model.coef_
+    intercept = float(model.intercept_)
+    return {
+        "coef": coef,
+        "intercept": intercept,
+        "local_pred": float(intercept + coef @ x),
+        "selected": frozenset(idx.tolist()),
+    }
