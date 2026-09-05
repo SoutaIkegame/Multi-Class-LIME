@@ -7,53 +7,58 @@
 
 ## 更新情報
 
-- 更新日時: 2026-09-05（Claude Code on the web、リモートセッション）
+- 更新日時: 2026-09-06（Claude Code on the web、リモートセッション）
 - 作業環境: リモート実行環境（Claude Code）
 - ブランチ: `claude/research-theme-evaluation-jkkx9c`（PR #5）
-- 基準コミット: `f7cbe43`
+- 基準コミット: `c506744`
 
 ## 今回の目的
 
-ユーザーから、直近の実験・ドキュメントに対する詳細な外部レビュー（5点）を受けた。査読レベルの精度を要求する、正当な指摘だった。全て検証の上、コード・ドキュメント両方を修正した。
+ユーザーから2回目の詳細な外部レビュー（Contrastive LIME・OVOアプローチの理論的説明に対する4点の指摘）を受けた。全て検証の上、コード修正・恒等式による検証・ドキュメント修正・新規実験の実装まで行った。
 
-## 指摘5点と対応
+## 指摘4点と対応
 
-1. **忠実性が学習に使った摂動上の成績になっている（in-sample）**：`run_pair_kernel_experiment.py`, `run_combined_bc_experiment.py`, `run_logistic_target_experiment.py`のfidelity/extreme/moderateは、いずれも学習に使ったZそのもので符号一致率を測っていた。学習内の適合度としては有効だが、未知の近傍への汎化を示す証拠にはならない。**対応**：`run_combined_bc_experiment.py`に独立held-out摂動（`Z_test`、同じインスタンス・同じカーネルで新規に引き直し）での評価を追加（`*_fidelity_test`等）。standard/kernel(B)/logistic(C)/combined(B+C)の4手法を一度に再検証。フルグリッド実行済み、結果は`docs/EXPERIMENT_LOG.md`フェーズ11.5に記載。他2スクリプトはこの再検証に一本化し、それぞれのdocstringに「fidelityはin-sample、`run_combined_bc_experiment.py`の`*_test`列を正とせよ」という注記を追加。
-2. **「Fisherである限りギャップは消えない」は未証明**：フェーズ6の結果は特定の近傍・重み付け・正則化のもとでの結果であり、Fisherの一般的な限界を証明したものではない。**対応**：`docs/EXPERIMENT_LOG.md`フェーズ6、`docs/PROJECT_SUMMARY.md`、`src/surrogates.py`のコメントを「この設定ではFisherが劣った」という限定表現に修正。
-3. **提案A（不採用）の敗因説明が実装と矛盾**：「フェーズ7は着目ペアだけで共有、提案Aは全クラスで共有だから負けた」と説明していたが、フェーズ7の`shared_support_fisher_soft`/`shared_support_ridge`も実際には全クラスの方向・係数を集約しており、この対比は誤り。**対応**：正しい違い（独立最適化の事後集約 vs 結合最適化）に修正。`docs/EXPERIMENT_LOG.md`フェーズ8、`docs/PROJECT_SUMMARY.md`を訂正。
-4. **「ロジスティック損失は有界」は数学的に誤り**：有界なのは損失$L(s,q)=\log(1+e^s)-qs$ではなく、勾配$\sigma(s)-q\in[-1,1]$。**対応**：`docs/EXPERIMENT_LOG.md`フェーズ10、`docs/PROJECT_SUMMARY.md`の該当箇所を修正（`src/surrogates.py`の`fit_ovo_logistic`docstringは元々「bounded gradient」と正しく書かれていたため修正不要）。
-5. **「有意差なし」→「固有の価値なし」、観測→確定原因という言い切り**：フェーズ7の「Fisherに固有の価値はない」、フェーズ6の「サンプル飢餓が原因」、フェーズ9の「副作用のない改善」を、観測結果と未証明の仮説を区別する表現に修正。
+1. **OVR/OVOは近似する量が違うのであって、目的変数が同じで損失だけ違うわけではない**：`docs/OVO_LIME_METHODS.md`・`docs/EXPERIMENT_LOG.md`の表現を訂正。
+2. **「直接回帰だから優れる」という説明は不正確**：Ridge回帰は目的変数に対する線形演算子なので、同一設計・重み・正則化なら「OVRの係数差」と「$p_c-p_d$の直接回帰」は数式上同一の推定量。`src/check_identities.py`（新規）で機械精度まで確認した（`check_ovr_difference_identity`）。実際の変更点は目的変数の変換（確率差→対数比）であり、「直接 vs 引き算」ではない。
+3. **循環整合性は「何も強制しない」のではなく、密なRidge版では数式上厳密に成立する**：`check_identities.py`の`check_cycle_consistency`で確認。Lasso版（ペアごとに特徴選択が変わる）でのみ崩れうる。
+4. **`fit_contrastive`と`fit_ovo_logistic`のepsilon平滑化が不整合だった**：`fit_ovo_logistic`のqを$(p_{c_1}+\varepsilon)/(p_{c_1}+p_{c_2}+2\varepsilon)$に修正し、`logit(q)`が`fit_contrastive`の対数比と厳密に一致するようにした。`check_identities.py`の`check_smoothing_consistency`で確認。
+
+**さらに「中心的な問いを精緻化してほしい」という依頼を受け**、「特定の競合クラスとの違いを説明するとき、OVRより少ない特徴で忠実に説明できるか」を研究の中心的な問いとして確定し、`docs/OVO_LIME_METHODS.md`・`docs/PROJECT_SUMMARY.md`に明記した。
+
+## 新規実装：フェーズ12（中心的な問いの直接検証）
+
+この問いを実際に検証するため、`src/run_ovo_vs_ovr_experiment.py`を新規実装した。
+
+- `fit_ovo_logistic_lasso`（`src/surrogates.py`新規）：`fit_ovo_logistic`のL1正則化版。L1ロジスティック回帰（`liblinear`）でK個ちょうどに疎化する二分探索（`_sparsest_logistic_l1_with_at_least_k`）。
+- OVR-union・Contrastive（Lasso）・Logistic（新規Lasso版）を、**held-out摂動**（最初から独立摂動で評価、フェーズ11.5の教訓を反映）でのペア符号一致率で比較。
+
+### 結果（重要、フェーズ11.5と一部矛盾する）
+
+- **Contrastive vs OVR-union**：ほぼ完全な同点（差−0.0007、0/18有意）。OVR-unionは実際には指定Kの1.3〜1.4倍の特徴を使っており（2クラス独立選択の和集合のため）、複雑さで有利な条件でもContrastiveに負けていない。
+- **Logistic（提案C）vs OVR-union・Contrastive**：**Cがわずかに劣る**（3/18・2/18で有意、全て同じ方向）。
+- **これはフェーズ11.5（密な全特徴フィット）でCがContrastiveより有意に優れていた結果と表面的に矛盾する**。整合的な解釈：Cの優位性は密な設定に限定され、L1による疎化を経由すると消える、あるいは逆転する（原因未解明、最優先の持ち越し課題）。
+
+「同じ表示特徴数ならOVOの方が忠実」という中心的な問いは、疎な設定では支持されなかった、というのが正直な結論。
 
 ## 実施した変更と主要な変更ファイル
 
-1. `src/run_combined_bc_experiment.py`: held-out評価（`Z_test`）を追加。フルグリッド再実行済み。
-2. `src/run_pair_kernel_experiment.py`, `src/run_logistic_target_experiment.py`: docstringにin-sampleである旨の注記とheld-out版への参照を追加（再実行はしていない、`run_combined_bc_experiment.py`の`*_test`列が同じ比較をカバーするため）。
-3. `src/surrogates.py`: フェーズ6のコメントを限定表現に修正。
-4. `docs/EXPERIMENT_LOG.md`: 冒頭に「0.0 訂正記録」を新設。フェーズ6・7・8・9・10・11の該当箇所を訂正。フェーズ11.5（held-out再検証）を追加（本セッション末尾で確定）。
-5. `docs/PROJECT_SUMMARY.md`: 訂正記録を追記、該当する結論の文言を修正。
-
-## 重要な判断とその理由
-
-held-out再検証は`run_combined_bc_experiment.py`一本に集約し、`run_pair_kernel_experiment.py`と`run_logistic_target_experiment.py`は再実行しなかった。理由：後者2つが個別に検証していたstandard/kernel(B)、standard/logistic(C)の比較は、`run_combined_bc_experiment.py`が4手法（standard/kernel/logistic/combined）を同時に扱うため完全に包含される。二重に実験を回すより、1本のheld-out版を「正」として位置づけ、他2本のdocstringに参照を追加する方が保守性が高いと判断した。
-
-## 実行したテスト・確認結果
-
-`run_combined_bc_experiment.py`のheld-out版をフルグリッド（9セル×20シード）で再実行。結果（詳細は`docs/EXPERIMENT_LOG.md`フェーズ11.5）：
-
-- **B・Cそれぞれ単体のfidelity改善はheld-outでも生き残る**（standard比、全体fidelity+0.003〜0.005、4〜6/9セルで有意）が、in-sampleの9/9からは有意性・効果量とも縮小した。
-- **「B+Cを組み合わせるとさらに積み上がる」というin-sample結論は再現されなかった**——combinedとkernel単体・logistic単体の差はheld-outで0〜1/9セルしか有意にならない。in-sample版で見えていた上乗せは学習サンプルへの適合度の見かけ上の差だった可能性が高く、撤回した。
-- 極端領域fidelityはtrain・test問わず一貫して無風。
-- 方向の安定性（resamplingベースで元々in-sampleの問題を受けない）は変わらず：logistic単体が最も一貫して改善（8/9）、combinedはlogistic単体より悪化（6/9有意）。
-- **結論**：Cを単体の主軸として推奨、Bの追加併用は積極的には推奨しない、という方針に修正。
+1. `src/check_identities.py`（新規）：3つの恒等式チェック（OVR差分、循環整合性、epsilon平滑化）。
+2. `src/surrogates.py`：`fit_ovo_logistic`のepsilon修正、`fit_contrastive`・`fit_ovo_logistic`周辺のdocstring訂正、`fit_ovo_logistic_lasso`・`_sparsest_logistic_l1_with_at_least_k`追加。
+3. `src/run_ovo_vs_ovr_experiment.py`（新規）：フェーズ12の実験。フルグリッド実行済み。
+4. `docs/EXPERIMENT_LOG.md`：「0.1 訂正記録」新設、フェーズ4の訂正、フェーズ12追加、以降のセクション番号を繰り下げ。
+5. `docs/OVO_LIME_METHODS.md`：中心的な問いの確定、訂正、OVOの価値の一般化された説明（共通成分の相殺）を追記。
+6. `docs/PROJECT_SUMMARY.md`：プロジェクトの目的を現状（Contrastive+C提案、Fisher分析章）に合わせて更新、フェーズ12の結果を追記。
 
 ## 未完了・既知の問題・未検証事項
 
-- フェーズ1〜8（`run_experiment.py`, `run_contrastive_experiment.py`, `run_fidelity_experiment.py`, `run_extreme_regime_experiment.py`, `run_shared_support_experiment.py`のRF側fidelity）も同じin-sample構造を持つ。今回はフェーズ9〜11（現在採用を検討している提案B/C/combined）のみ優先してheld-out化した。過去のフェーズも同様に再検証する価値があるが、未着手。
-- 提案Aの敗因（独立最適化の事後集約 vs 結合最適化のどちらが真因か）は仮説のまま、切り分け実験は未実施。
-- 前回からの持ち越し：ソフト版Fisherのstabilityフルグリッド未検証、`investigate_reversal.py`の統計化未実施、ラベルのみ黒箱での比較未実施、実データ未検証。
+- **最優先**：提案Cの密/疎での逆転の原因調査（L1正則化パスの挙動）。
+- OVR-unionの複雑さがKを超える非対称性を解消した比較（各クラスK/2個ずつなど）は未実施。
+- フェーズ12で保留した仮説2（共通特徴の回避）・仮説3（競合クラス変更への追随）の検証には、共通/ペア固有/無関係特徴を明示的に作る合成データ生成器が必要で未実装。
+- 前回からの持ち越し：フェーズ1〜8のfidelityのheld-out化、ソフト版Fisherのstability、`investigate_reversal.py`の統計化、実データ未検証。
+- スライド（`draft_slides.pptx`）は前回・今回の訂正内容に未反映のまま。
 
 ## 次に行うこと
 
-1. **中間発表スライド（`draft_slides.pptx`、ユーザーに送付済み）の訂正が必要**：スライド10（提案Aの敗因説明が実装と矛盾）、スライド11・12（B+C併用を推奨する内容だが、held-out再検証で「B+Cが積み上がる」という結論は撤回済み）を、本セッションの訂正内容に合わせて作り直す必要がある。まだ未対応。
-2. 時間が許せば、フェーズ1〜8のfidelityもheld-out化する（優先度高い、`今後の大きな課題`参照）。
-3. 提案Aの敗因仮説（独立最適化の事後集約 vs 結合最適化）を切り分ける追加実験を検討する。
+1. 提案Cの密/疎逆転の原因を調査する。
+2. 中間発表の結論（「Cを主軸とする」）を、密/疎どちらの設定に基づくか明示する形に修正する。
+3. スライドの訂正（前回から持ち越し）。

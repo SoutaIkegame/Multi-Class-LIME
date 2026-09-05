@@ -90,25 +90,96 @@ def fit_onevsrest_lasso(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, x
 
 def fit_contrastive(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, c1: int, c2: int,
                      x: np.ndarray, eps: float = 1e-6, alpha: float = 1.0) -> dict:
-    """"Contrastive LIME": instead of fitting two one-vs-rest surrogates and
-    subtracting them, directly regress log((p_c1+eps)/(p_c2+eps)) on z. For
-    a softmax black box this target equals the raw score difference
-    s_c1 - s_c2, so sign(prediction) == sign(p_c1(z) - p_c2(z)) exactly,
-    and third classes cannot distort the c1-vs-c2 boundary the way they can
-    distort the magnitude of a raw probability difference p_c1 - p_c2.
+    """"Contrastive LIME": regress log((p_c1+eps)/(p_c2+eps)) on z, rather
+    than fitting p_c1 and p_c2 separately and subtracting.
 
-    Unlike fit_onevsrest_lasso's per-class independent fits or fit_fisher's
-    shared-S_W pooling, this is fit independently PER PAIR: nothing forces
-    g(A,B), g(B,C), g(A,C) to share structure, so LIMEtree's "different
-    feature subsets" failure mode can still occur across pairs even though
-    each individual pair's fidelity should be excellent (it directly
-    optimizes the quantity being displayed).
+    NOTE on what this actually changes (corrected 2026-09-06): Ridge
+    regression is a linear operator on its target for a fixed design
+    matrix/weights/alpha (beta_hat = (Z^T W Z + aI)^{-1} Z^T W y is linear
+    in y), so "fit_onevsrest(c1) - fit_onevsrest(c2)" and "Ridge fit
+    directly on p_c1 - p_c2" are the SAME estimator, not two different
+    ones (verified to machine precision in check_identities.py). "Direct
+    fitting vs fit-then-subtract" is therefore NOT what distinguishes
+    Contrastive from an OVR-difference baseline. The actual change is the
+    TARGET TRANSFORM: probability difference (p_c1 - p_c2) -> log-ratio
+    (log(p_c1/p_c2)). For a softmax black box the log-ratio target equals
+    the raw score difference s_c1 - s_c2 exactly, so sign(prediction) ==
+    sign(p_c1(z) - p_c2(z)) holds for the TRUE log-ratio; third classes
+    cannot distort the c1-vs-c2 comparison the way they can distort the
+    magnitude of a raw probability difference. Whether the FITTED
+    (necessarily imperfect, locally-linear) approximation preserves that
+    sign is an empirical question, not a guarantee -- hence measuring sign
+    agreement as a fidelity metric.
+
+    Cycle consistency: with the same Z, weights, and alpha shared across
+    all pairs, beta_ab + beta_bc = beta_ac holds EXACTLY for this dense
+    fit (a mathematical consequence of Ridge's linearity in the target,
+    not something "nothing forces" -- verified in check_identities.py).
+    This guarantee is specific to the dense fit: fit_contrastive_lasso can
+    break it, because each pair's sparsest-Lasso-with->=K search can pick
+    a different feature subset (and effectively a different regularization
+    strength) per pair, so the shared-(Z, weights, alpha) precondition no
+    longer holds across pairs.
     """
     y = np.log((proba[:, c1] + eps) / (proba[:, c2] + eps))
     model = Ridge(alpha=alpha)
     model.fit(Z, y, sample_weight=weights)
     local_pred = float(model.predict(x[None, :])[0])
     return {"coef": model.coef_.copy(), "intercept": float(model.intercept_), "local_pred": local_pred}
+
+
+def _sparsest_logistic_l1_with_at_least_k(Z2, y2, w2, k, lo=1e-3, hi=100.0, iters=15):
+    """Binary-search the L1 inverse-regularization strength C for the
+    sparsest weighted logistic fit that still has >= k nonzero coefficients
+    (mirrors _sparsest_lasso_with_at_least_k; nnz is ~monotone
+    non-decreasing in C here since C is inverse regularization)."""
+    def fit_at(C):
+        m = LogisticRegression(C=C, penalty="l1", solver="liblinear", max_iter=2000)
+        m.fit(Z2, y2, sample_weight=w2)
+        nnz = int(np.sum(np.abs(m.coef_[0]) > 1e-10))
+        return nnz, m
+
+    n_lo, m_lo = fit_at(lo)
+    n_hi, m_hi = fit_at(hi)
+    if n_hi < k:
+        return m_hi  # even the least regularization can't reach k features
+    if n_lo >= k:
+        return m_lo
+
+    best = m_hi
+    for _ in range(iters):
+        mid = float(np.sqrt(lo * hi))
+        n_mid, m_mid = fit_at(mid)
+        if n_mid >= k:
+            hi, best = mid, m_mid
+        else:
+            lo = mid
+    return best
+
+
+def fit_ovo_logistic_lasso(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, c1: int, c2: int,
+                           x: np.ndarray, K: int, eps: float = 1e-6) -> dict:
+    """Sparse (top-K feature) version of fit_ovo_logistic, via L1-penalized
+    soft-label logistic regression -- mirrors fit_contrastive_lasso's
+    methodology (sparsest fit with >= K nonzero coefficients, then keep the
+    top-K by magnitude) so the two can be compared at equal K."""
+    q = (proba[:, c1] + eps) / (proba[:, c1] + proba[:, c2] + 2 * eps)
+    Z2 = np.vstack([Z, Z])
+    y2 = np.concatenate([np.ones(len(Z)), np.zeros(len(Z))])
+    w2 = np.concatenate([weights * q, weights * (1.0 - q)])
+    model = _sparsest_logistic_l1_with_at_least_k(Z2, y2, w2, K)
+    coef = model.coef_[0].copy()
+    idx = np.argsort(-np.abs(coef))[:K]
+    mask = np.zeros_like(coef, dtype=bool)
+    mask[idx] = True
+    coef_masked = np.where(mask, coef, 0.0)
+    intercept = float(model.intercept_[0])
+    return {
+        "coef": coef_masked,
+        "intercept": intercept,
+        "local_pred": float(intercept + coef_masked @ x),
+        "selected": frozenset(idx.tolist()),
+    }
 
 
 def fit_contrastive_lasso(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, c1: int, c2: int,
@@ -313,21 +384,29 @@ def shared_support_ridge(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, 
 
 
 def fit_ovo_logistic(Z: np.ndarray, weights: np.ndarray, proba: np.ndarray, c1: int, c2: int,
-                     x: np.ndarray, C: float = 1.0) -> dict:
+                     x: np.ndarray, C: float = 1.0, eps: float = 1e-6) -> dict:
     """Proposal C: fit q(z) = p_c1(z) / (p_c1(z)+p_c2(z)) with a WEIGHTED
     SOFT-LABEL logistic regression instead of Contrastive's Ridge-on-
-    log-odds. logit(q) is the exact same target as fit_contrastive's
-    log(p_c1/p_c2), so this isolates the loss function: cross-entropy
-    (bounded gradient, saturates gracefully near q=0/1) vs squared error on
-    a log-transformed target (unbounded, blows up near q=0/1 -- the
+    log-odds. This isolates the LOSS FUNCTION: cross-entropy (bounded
+    gradient, saturates gracefully near q=0/1) vs squared error on a
+    log-transformed target (unbounded, blows up near q=0/1 -- the
     mechanism behind the "extreme regime" degradation found earlier).
+
+    q uses the SAME additive smoothing convention as fit_contrastive's
+    log((p_c1+eps)/(p_c2+eps)): q = (p_c1+eps) / (p_c1+p_c2+2*eps), so that
+    logit(q) == log((p_c1+eps)/(p_c2+eps)) EXACTLY (check: 1-q =
+    (p_c2+eps)/(p_c1+p_c2+2*eps), so q/(1-q) = (p_c1+eps)/(p_c2+eps)). Using
+    an inconsistent smoothing (e.g. a bare 1e-12 added only to the
+    denominator, as an earlier version of this function did) would make
+    the two methods' targets subtly different quantities near p=0, not
+    just two different losses on the same quantity.
 
     sklearn's LogisticRegression has no continuous-soft-label fit mode, so
     each row is duplicated into a y=1 case with weight pi_i*q_i and a y=0
     case with weight pi_i*(1-q_i); this is the standard soft-label-via-
     case-weights construction and reproduces the weighted soft cross-
     entropy exactly (sum_i pi_i[q_i log sigma + (1-q_i) log(1-sigma)])."""
-    q = proba[:, c1] / (proba[:, c1] + proba[:, c2] + 1e-12)
+    q = (proba[:, c1] + eps) / (proba[:, c1] + proba[:, c2] + 2 * eps)
     Z2 = np.vstack([Z, Z])
     y2 = np.concatenate([np.ones(len(Z)), np.zeros(len(Z))])
     w2 = np.concatenate([weights * q, weights * (1.0 - q)])
